@@ -194,12 +194,19 @@ export default function Dashboard() {
 
   const stampNow = () => setLastUpdated(new Date().toLocaleTimeString('en-GB'));
 
+  // Read hospitalId from the authenticated user so every role sees their own hospital.
+  // Falls back to 'h1' only if no user is stored (e.g. direct URL access in dev).
+  const storedUser = (() => {
+    try { return JSON.parse(localStorage.getItem('jeevan_user')); } catch { return null; }
+  })();
+  const hospitalId = storedUser?.hospitalId || 'h1';
+
   useEffect(() => {
-    dashboardService.get('h1')
+    dashboardService.get(hospitalId)
       .then((res) => { setData(res.data.data); stampNow(); })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [hospitalId]);
 
   if (loading) return <LoadingSkeleton />;
 

@@ -1,24 +1,29 @@
 const express = require('express');
-const { getAll, getById, add, update, remove } = require('../utils/db');
+const Bed = require('../models/Bed');
+const Hospital = require('../models/Hospital');
+const csrf = require('../middleware/csrf');
+const asyncHandler = require('../utils/asyncHandler');
+const { log } = require('../utils/logger');
 
 const router = express.Router();
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+const safeId = (id) => {
+  const s = String(id).replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!s) throw new Error('Invalid resource id');
+  return s;
+};
 
 const VALID_TYPES    = ['ICU', 'General', 'Emergency'];
 const VALID_STATUSES = ['available', 'occupied', 'cleaning'];
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-// Recalculate available / occupied / cleaning counts from a status transition
 const applyStatusTransition = (bed, newStatus) => {
-  const prev = bed.status?.toLowerCase();
+  const prev = bed.status?.toLowerCase() || 'available';
   const next = newStatus.toLowerCase();
+  
   if (prev === next) return {};
 
   const patch = { status: next };
 
-  // Decrement previous bucket, increment new bucket (floor at 0)
   const dec = (field) => Math.max(0, (bed[field] || 0) - 1);
   const inc = (field) => (bed[field] || 0) + 1;
 
@@ -33,161 +38,155 @@ const applyStatusTransition = (bed, newStatus) => {
   return patch;
 };
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+const mapDoc = (d) => {
+  const { _id, __v, ...rest } = d;
+  return { ...rest, id: rest.id || _id?.toString() };
+};
 
-// GET /api/beds  — all beds, optional ?hospitalId= filter
-router.get('/', (req, res) => {
-  try {
-    const { hospitalId, type } = req.query;
-    let beds = getAll('beds');
+router.get('/', asyncHandler(async (req, res) => {
+  log('API', `GET /beds`);
+  const { hospitalId, type } = req.query;
+  const limit = parseInt(req.query.limit) || 20;
+  const page = parseInt(req.query.page) || 1;
 
-    if (hospitalId) beds = beds.filter((b) => b.hospitalId === hospitalId);
-    if (type)       beds = beds.filter((b) => b.type.toLowerCase() === type.toLowerCase());
-
-    // Attach occupancy % to each record for convenience
-    const enriched = beds.map((b) => ({
-      ...b,
-      occupancyPct: b.total ? Math.round((b.occupied / b.total) * 100) : 0,
-    }));
-
-    res.json({ success: true, count: enriched.length, data: enriched });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+  const filter = {};
+  if (hospitalId) filter.hospitalId = hospitalId;
+  if (type) {
+      filter.type = { $regex: new RegExp(`^${type}$`, "i") };
   }
-});
 
-// GET /api/beds/:id  — single bed record
-router.get('/:id', (req, res) => {
-  try {
-    const bed = getById('beds', req.params.id);
-    if (!bed) return res.status(404).json({ success: false, message: 'Bed not found' });
+  const bedsData = await Bed.find(filter)
+    .skip((page - 1) * limit)
+    .limit(limit)
+    .lean();
+  const beds = bedsData.map(mapDoc);
 
-    res.json({
-      success: true,
-      data: { ...bed, occupancyPct: bed.total ? Math.round((bed.occupied / bed.total) * 100) : 0 },
+  const enriched = beds.map((bObj) => {
+    return {
+      ...bObj,
+      occupancyPct: bObj.total ? Math.round((bObj.occupied / bObj.total) * 100) : 0,
+    };
+  });
+
+  res.json({ success: true, count: enriched.length, data: enriched });
+}));
+
+router.get('/:id', asyncHandler(async (req, res) => {
+  log('API', `GET /beds/${req.params.id}`);
+  const bedData = await Bed.findOne({ id: safeId(req.params.id) }).lean();
+  if (!bedData) return res.status(404).json({ success: false, message: 'Bed not found' });
+
+  const bObj = mapDoc(bedData);
+  res.json({
+    success: true,
+    data: { ...bObj, occupancyPct: bObj.total ? Math.round((bObj.occupied / bObj.total) * 100) : 0 },
+  });
+}));
+
+// csrf: Double Submit Cookie — validates x-csrf-token header against csrf-token cookie
+router.post('/', csrf, asyncHandler(async (req, res) => {
+  log('API', `POST /beds`);
+  const { hospitalId, type, total, available, occupied, cleaning } = req.body;
+
+  if (!hospitalId || !type) {
+    return res.status(400).json({ success: false, message: 'hospitalId and type are required' });
+  }
+
+  if (!VALID_TYPES.includes(type)) {
+    return res.status(400).json({
+      success: false,
+      message: `type must be one of: ${VALID_TYPES.join(', ')}`,
     });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
   }
-});
 
-// POST /api/beds  — add a new bed group record
-router.post('/', (req, res) => {
-  try {
-    const { hospitalId, type, total, available, occupied, cleaning } = req.body;
+  const hospital = await Hospital.findOne({ id: hospitalId }).lean();
+  if (!hospital) {
+    return res.status(404).json({ success: false, message: 'Hospital not found' });
+  }
 
-    if (!hospitalId || !type) {
-      return res.status(400).json({ success: false, message: 'hospitalId and type are required' });
-    }
-
-    if (!VALID_TYPES.includes(type)) {
-      return res.status(400).json({
-        success: false,
-        message: `type must be one of: ${VALID_TYPES.join(', ')}`,
-      });
-    }
-
-    if (!getById('hospitals', hospitalId)) {
-      return res.status(404).json({ success: false, message: 'Hospital not found' });
-    }
-
-    // Prevent duplicate type entry for the same hospital
-    const duplicate = getAll('beds').find(
-      (b) => b.hospitalId === hospitalId && b.type === type
-    );
-    if (duplicate) {
-      return res.status(409).json({
-        success: false,
-        message: `A "${type}" bed record already exists for this hospital. Use PUT to update it.`,
-      });
-    }
-
-    const totalCount     = Number(total)     || 0;
-    const availableCount = Number(available) || 0;
-    const occupiedCount  = Number(occupied)  || 0;
-    const cleaningCount  = Number(cleaning)  || 0;
-
-    // Sanity check: counts must not exceed total
-    if (availableCount + occupiedCount + cleaningCount > totalCount) {
-      return res.status(400).json({
-        success: false,
-        message: 'available + occupied + cleaning cannot exceed total',
-      });
-    }
-
-    const newBed = add('beds', {
-      hospitalId,
-      type,
-      total:     totalCount,
-      available: availableCount,
-      occupied:  occupiedCount,
-      cleaning:  cleaningCount,
+  const duplicate = await Bed.findOne({ hospitalId, type }).lean();
+  if (duplicate) {
+    return res.status(409).json({
+      success: false,
+      message: `A "${type}" bed record already exists for this hospital. Use PUT to update it.`,
     });
-
-    res.status(201).json({ success: true, data: newBed });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
   }
-});
 
-// PUT /api/beds/:id  — update bed counts or transition a single bed's status
-router.put('/:id', (req, res) => {
-  try {
-    const bed = getById('beds', req.params.id);
-    if (!bed) return res.status(404).json({ success: false, message: 'Bed not found' });
+  const totalCount     = Number(total)     || 0;
+  const availableCount = Number(available) || 0;
+  const occupiedCount  = Number(occupied)  || 0;
+  const cleaningCount  = Number(cleaning)  || 0;
 
-    const { status, total, available, occupied, cleaning } = req.body;
+  if (availableCount + occupiedCount + cleaningCount > totalCount) {
+    return res.status(400).json({
+      success: false,
+      message: 'available + occupied + cleaning cannot exceed total',
+    });
+  }
 
-    // Case 1: single-bed status transition (available ↔ occupied ↔ cleaning)
-    if (status) {
-      const normalised = status.toLowerCase();
-      if (!VALID_STATUSES.includes(normalised)) {
-        return res.status(400).json({
-          success: false,
-          message: `status must be one of: ${VALID_STATUSES.join(', ')}`,
-        });
-      }
+  const newBed = await Bed.create({
+    hospitalId,
+    type,
+    total:     totalCount,
+    available: availableCount,
+    occupied:  occupiedCount,
+    cleaning:  cleaningCount,
+  });
 
-      const patch = applyStatusTransition(bed, normalised);
-      const updated = update('beds', req.params.id, patch);
-      return res.json({ success: true, data: updated });
-    }
+  res.status(201).json({ success: true, data: newBed.toJSON() });
+}));
 
-    // Case 2: bulk count update (admin correction)
-    const patch = {};
-    if (total     !== undefined) patch.total     = Number(total);
-    if (available !== undefined) patch.available = Number(available);
-    if (occupied  !== undefined) patch.occupied  = Number(occupied);
-    if (cleaning  !== undefined) patch.cleaning  = Number(cleaning);
+// csrf: Double Submit Cookie — validates x-csrf-token header against csrf-token cookie
+router.put('/:id', csrf, asyncHandler(async (req, res) => {
+  log('API', `PUT /beds/${req.params.id}`);
+  const safeParamId = safeId(req.params.id);
+  const bed = await Bed.findOne({ id: safeParamId }).lean();
+  if (!bed) return res.status(404).json({ success: false, message: 'Bed not found' });
 
-    const newTotal     = patch.total     ?? bed.total;
-    const newAvailable = patch.available ?? bed.available;
-    const newOccupied  = patch.occupied  ?? bed.occupied;
-    const newCleaning  = patch.cleaning  ?? bed.cleaning;
+  const { status, total, available, occupied, cleaning } = req.body;
 
-    if (newAvailable + newOccupied + newCleaning > newTotal) {
+  if (status) {
+    const normalised = status.toLowerCase();
+    if (!VALID_STATUSES.includes(normalised)) {
       return res.status(400).json({
         success: false,
-        message: 'available + occupied + cleaning cannot exceed total',
+        message: `status must be one of: ${VALID_STATUSES.join(', ')}`,
       });
     }
 
-    const updated = update('beds', req.params.id, patch);
-    res.json({ success: true, data: updated });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    const patch = applyStatusTransition(bed, normalised);
+    const updated = await Bed.findOneAndUpdate({ id: safeParamId }, patch, { new: true }).lean();
+    return res.json({ success: true, data: mapDoc(updated) });
   }
-});
 
-// DELETE /api/beds/:id  — remove bed record
-router.delete('/:id', (req, res) => {
-  try {
-    const removed = remove('beds', req.params.id);
-    if (!removed) return res.status(404).json({ success: false, message: 'Bed not found' });
-    res.json({ success: true, message: 'Bed record removed', data: removed });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+  const patch = {};
+  if (total     !== undefined) patch.total     = Number(total);
+  if (available !== undefined) patch.available = Number(available);
+  if (occupied  !== undefined) patch.occupied  = Number(occupied);
+  if (cleaning  !== undefined) patch.cleaning  = Number(cleaning);
+
+  const newTotal     = patch.total     ?? bed.total;
+  const newAvailable = patch.available ?? bed.available;
+  const newOccupied  = patch.occupied  ?? bed.occupied;
+  const newCleaning  = patch.cleaning  ?? bed.cleaning;
+
+  if (newAvailable + newOccupied + newCleaning > newTotal) {
+    return res.status(400).json({
+      success: false,
+      message: 'available + occupied + cleaning cannot exceed total',
+    });
   }
-});
+
+  const updated = await Bed.findOneAndUpdate({ id: safeParamId }, patch, { new: true }).lean();
+  res.json({ success: true, data: mapDoc(updated) });
+}));
+
+// csrf: Double Submit Cookie — validates x-csrf-token header against csrf-token cookie
+router.delete('/:id', csrf, asyncHandler(async (req, res) => {
+  log('API', `DELETE /beds/${req.params.id}`);
+  const removed = await Bed.findOneAndDelete({ id: safeId(req.params.id) }).lean();
+  if (!removed) return res.status(404).json({ success: false, message: 'Bed not found' });
+  res.json({ success: true, message: 'Bed record removed', data: mapDoc(removed) });
+}));
 
 module.exports = router;

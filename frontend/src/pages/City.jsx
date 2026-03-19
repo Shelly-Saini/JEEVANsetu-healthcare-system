@@ -62,9 +62,12 @@ function StatBadge({ label, value, color = 'indigo' }) {
   );
 }
 
-function MiniBar({ label, value }) {
+function MiniBar({ label, value, invert = false }) {
   const pct   = Math.min(value, 100);
-  const color = pct >= 75 ? 'bg-red-400' : pct >= 45 ? 'bg-yellow-400' : 'bg-green-400';
+  // invert=true means high value is GOOD (e.g. doctor availability)
+  const color = invert
+    ? (pct >= 60 ? 'bg-green-400' : pct >= 35 ? 'bg-yellow-400' : 'bg-red-400')
+    : (pct >= 75 ? 'bg-red-400'   : pct >= 45 ? 'bg-yellow-400' : 'bg-green-400');
   return (
     <div>
       <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
@@ -104,9 +107,9 @@ function HospitalCard({ hospital }) {
       </div>
 
       <div className="space-y-2">
-        <MiniBar label="OPD Load"           value={hospital.opdLoad} />
-        <MiniBar label="Bed Occupancy"      value={hospital.bedOccupancy} />
-        <MiniBar label="Doctor Availability" value={hospital.doctorAvailability} />
+        <MiniBar label="OPD Load"            value={hospital.opdLoad} />
+        <MiniBar label="Bed Occupancy"        value={hospital.bedOccupancy} />
+        <MiniBar label="Doctor Availability"  value={hospital.doctorAvailability} invert />
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">
@@ -171,14 +174,18 @@ export default function City() {
   const [originalData, setOriginalData] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
 
+  const [city,    setCity]    = useState('Delhi');
+
   const stampNow = () => setLastUpdated(new Date().toLocaleTimeString('en-GB'));
 
   useEffect(() => {
-    cityService.get()
+    setLoading(true);
+    setError(null);
+    cityService.get(city)
       .then((res) => { setData(res.data.data); setOriginalData(res.data.data); stampNow(); })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [city]);
 
   const handleSurgeToggle = () => {
     if (surging) {
@@ -221,7 +228,17 @@ export default function City() {
             Real-time health system load across {cityStats.totalHospitals} hospitals
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* City selector — drives which hospitals are shown */}
+          <select
+            value={city}
+            onChange={(e) => { setSurging(false); setCity(e.target.value); }}
+            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          >
+            <option value="Delhi">🏙️ Delhi</option>
+            <option value="Mumbai">🏙️ Mumbai</option>
+            <option value="Bangalore">🏙️ Bangalore</option>
+          </select>
           {surging && (
             <span className="text-xs font-semibold px-3 py-1 rounded-full bg-red-100 text-red-600 animate-pulse">
               ⚡ Surge Mode Active
@@ -298,7 +315,7 @@ export default function City() {
           🗺️ Hospital Locations
         </h2>
         <Suspense fallback={<div className="h-80 flex items-center justify-center text-gray-400 text-sm">Loading map...</div>}>
-          <CityMap hospitals={hospitals} />
+          <CityMap hospitals={hospitals} city={city} />
         </Suspense>
       </div>
 

@@ -18,11 +18,14 @@ const calcBedScore = (beds) => {
   return total ? (occupied / total) * 100 : 0;
 };
 
-// Doctor pressure score (0–100): % not available
+// Doctor pressure score (0–100): blends binary unavailability (70%) with
+// average workload intensity (30%) so overloaded-but-busy doctors raise the score.
 const calcDoctorScore = (doctors) => {
   if (!doctors.length) return 0;
   const notAvailable = doctors.filter((d) => d.status !== 'available').length;
-  return (notAvailable / doctors.length) * 100;
+  const unavailabilityPct = (notAvailable / doctors.length) * 100;
+  const avgWorkload = doctors.reduce((s, d) => s + (d.workload || 0), 0) / doctors.length;
+  return unavailabilityPct * 0.7 + avgWorkload * 0.3;
 };
 
 // Final stress score: 40% OPD + 40% Bed + 20% Doctor
