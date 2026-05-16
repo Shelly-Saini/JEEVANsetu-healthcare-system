@@ -1,11 +1,11 @@
 import axios from 'axios';
 
 const ALLOWED_API_ORIGINS = [
-  'http://localhost:5000',
-  'https://jeevansetu-api.onrender.com',   // update when deployed
+  '/api',
+  'https://jeevansetuthealthcaresystem.vercel.app'
 ];
 
-const resolvedBase = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const resolvedBase = import.meta.env.VITE_API_URL || '/api';
 
 const isAllowed = ALLOWED_API_ORIGINS.some((origin) =>
   resolvedBase.startsWith(origin)
