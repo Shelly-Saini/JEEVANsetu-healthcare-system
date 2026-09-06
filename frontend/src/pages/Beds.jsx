@@ -1,385 +1,230 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState } from 'react';
+import { BedDouble, Plus, ArrowRight, Sparkles, UserCheck, AlertTriangle } from 'lucide-react';
 import { useHospital } from '../utils/hospitalStore.jsx';
-import Tooltip from '../components/Tooltip.jsx';
-import ApiStatusBanner from '../components/ApiStatusBanner.jsx';
+import { useAuth } from '../utils/AuthContext.jsx';
+import { useNotifications } from '../utils/notificationStore.jsx';
+import { bedService } from '../services/api.js';
+import { BED_TYPES } from '../constants/enums.js';
+import { sumBedTotals, occupancyPct as pctOf } from '../utils/bedMath.js';
+import { Card, CardHeader, StatCard } from '../components/ui/Card.jsx';
+import { Button, ProgressBar } from '../components/ui/Button.jsx';
+import { EmptyState, ErrorState, CardSkeleton } from '../components/ui/States.jsx';
+import Modal from '../components/ui/Modal.jsx';
+import Badge from '../components/ui/Badge.jsx';
 
-// ─── Dummy Data ───────────────────────────────────────────────────────────────
-
-const PATIENT_NAMES = [
-  'Ramesh Yadav', 'Sunita Devi', 'Mohan Lal', 'Anil Kumar', 'Geeta Singh',
-  'Deepak Mishra', 'Lalita Verma', 'Suresh Tiwari', 'Rekha Pandey', 'Vijay Gupta',
-];
-
-const INITIAL_BEDS = [
-  // ICU (10)
-  ...Array.from({ length: 10 }, (_, i) => ({
-    id: `ICU-${String(i + 1).padStart(2, '0')}`,
-    type: 'ICU',
-    status: i < 7 ? 'Occupied' : i < 9 ? 'Available' : 'Cleaning',
-    patient: i < 7 ? PATIENT_NAMES[i] : null,
-  })),
-  // General (20)
-  ...Array.from({ length: 20 }, (_, i) => ({
-    id: `GEN-${String(i + 1).padStart(2, '0')}`,
-    type: 'General',
-    status: i < 12 ? 'Occupied' : i < 18 ? 'Available' : 'Cleaning',
-    patient: i < 12 ? PATIENT_NAMES[i % 10] : null,
-  })),
-  // Emergency (10)
-  ...Array.from({ length: 10 }, (_, i) => ({
-    id: `EMG-${String(i + 1).padStart(2, '0')}`,
-    type: 'Emergency',
-    status: i < 5 ? 'Occupied' : i < 8 ? 'Available' : 'Cleaning',
-    patient: i < 5 ? PATIENT_NAMES[i] : null,
-  })),
-];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const fmt = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
-
-const getOccupancyStatus = (availablePct) => {
-  if (availablePct < 20) return { label: 'Critical', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' };
-  if (availablePct < 40) return { label: 'Warning',  cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' };
-  return                        { label: 'Stable',   cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' };
-};
-
-const STATUS_STYLE = {
-  Available: 'bg-green-100 text-green-700',
-  Occupied:  'bg-red-100 text-red-700',
-  Cleaning:  'bg-yellow-100 text-yellow-700',
-};
-
-const BAR_COLOR = (occupiedPct) =>
-  occupiedPct >= 80 ? 'bg-red-500' : occupiedPct >= 60 ? 'bg-yellow-500' : 'bg-green-500';
-
-// Cleaning timer hook — tracks minutes since a bed entered Cleaning state
-function useCleaningMinutes(cleaningStartedAt) {
-  const [mins, setMins] = useState(() =>
-    cleaningStartedAt ? Math.floor((Date.now() - cleaningStartedAt) / 60000) : 0
-  );
-  useEffect(() => {
-    if (!cleaningStartedAt) return;
-    const id = setInterval(() => setMins(Math.floor((Date.now() - cleaningStartedAt) / 60000)), 30000);
-    return () => clearInterval(id);
-  }, [cleaningStartedAt]);
-  return mins;
-}
-
-function CleaningTimer({ startedAt }) {
-  const mins = useCleaningMinutes(startedAt);
-  return <span className="text-xs text-yellow-600 dark:text-yellow-400 ml-1">🧹 {mins} min{mins !== 1 ? 's' : ''}</span>;
-}
-
-function SummaryCard({ label, count, total, color, icon }) {
-  const percentage = pct(count, total);
-  const colors = {
-    green:  'bg-green-50  text-green-700  dark:bg-green-900/20  dark:text-green-300',
-    yellow: 'bg-yellow-50 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-300',
-    red:    'bg-red-50    text-red-700    dark:bg-red-900/20    dark:text-red-300',
-    blue:   'bg-blue-50   text-blue-700   dark:bg-blue-900/20   dark:text-blue-300',
-  };
-  return (
-    <div className={`rounded-2xl p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg ${colors[color]}`}>
-      <p className="text-xs font-medium uppercase tracking-wide opacity-60">{icon} {label}</p>
-      <p className="text-3xl font-black mt-1">{count}</p>
-      <p className="text-xs mt-1 opacity-70">{percentage}% of total</p>
-    </div>
-  );
-}
-
-function ProgressBar({ pct: value, color }) {
-  return (
-    <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2 mt-1">
-      <div className={`${color} h-2 rounded-full transition-all duration-500`} style={{ width: `${Math.min(value, 100)}%` }} />
-    </div>
-  );
-}
-
-function BedTypeCard({ type, beds }) {
-  const total     = beds.length;
-  const occupied  = beds.filter(b => b.status === 'Occupied').length;
-  const available = beds.filter(b => b.status === 'Available').length;
-  const cleaning  = beds.filter(b => b.status === 'Cleaning').length;
-  const occPct    = pct(occupied, total);
-  const availPct  = pct(available, total);
-  const status    = getOccupancyStatus(availPct);
-
-  const borderCls = availPct < 20
-    ? 'border-red-400 shadow-red-100 dark:shadow-red-900/20'
-    : availPct < 40
-    ? 'border-yellow-400'
-    : 'border-gray-100 dark:border-gray-800';
-  const bgTint = availPct < 20 ? 'bg-red-50 dark:bg-red-900/10' : 'bg-white dark:bg-gray-900';
-
-  return (
-    <div className={`${bgTint} rounded-2xl border-2 ${borderCls} shadow-sm p-5 transition-all duration-300 ease-in-out hover:scale-[1.02] hover:shadow-xl`}>
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-bold text-gray-800 dark:text-gray-100">{type} Beds</h3>
-        <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${status.cls}`}>{status.label}</span>
-      </div>
-      {availPct < 20 && (
-        <p className="text-xs font-semibold text-red-600 dark:text-red-400 mb-3">⚠️ Only {available} {type} bed{available !== 1 ? 's' : ''} left</p>
-      )}
-      <div className="grid grid-cols-4 gap-2 text-center mb-4">
-        {[['Total', total, 'text-gray-700'], ['Occupied', occupied, 'text-red-600'], ['Available', available, 'text-green-600'], ['Cleaning', cleaning, 'text-yellow-600']].map(([l, v, c]) => (
-          <div key={l}>
-            <p className={`text-xl font-black ${c} dark:opacity-90`}>{v}</p>
-            <p className="text-xs text-gray-400">{l}</p>
-          </div>
-        ))}
-      </div>
-      <div>
-        <div className="flex justify-between text-xs text-gray-500 mb-1">
-          <span>Occupancy</span><span className="font-semibold">{occPct}%</span>
-        </div>
-        <ProgressBar pct={occPct} color={BAR_COLOR(occPct)} />
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
+const NEAR_CRITICAL_THRESHOLD = 85; // occupancy % at which a bed type needs attention
 
 export default function Beds() {
-  const { sharedBeds, setSharedBeds, error, stale, refetch } = useHospital();
-  // sharedBeds contains aggregated rows from API: {id, type, total, available, occupied, cleaning, occupancyPct}
-  // Map to the individual-bed shape the UI expects only when API data arrives
-  const [beds, setBeds] = useState([]);
+  const { sharedBeds, loading, error, refetch, hospitalId } = useHospital();
+  const { user } = useAuth();
+  const { addToast } = useNotifications();
+  const [busyId, setBusyId] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const canManage = user.role === 'admin' || user.role === 'staff';
 
-  useEffect(() => {
-    if (!sharedBeds.length) return;
-    // Expand each aggregated row into individual bed slot objects for the table
-    const expanded = [];
-    sharedBeds.forEach(row => {
-      const statusCounts = [
-        ...Array(row.occupied  || 0).fill('Occupied'),
-        ...Array(row.cleaning  || 0).fill('Cleaning'),
-        ...Array(row.available || 0).fill('Available'),
-      ];
-      statusCounts.forEach((status, i) => {
-        expanded.push({
-          id:      `${row.type}-${String(i + 1).padStart(2, '0')}`,
-          type:    row.type,
-          status,
-          patient: status === 'Occupied' ? PATIENT_NAMES[i % PATIENT_NAMES.length] : null,
-          _rowId:  row.id,
-        });
-      });
-    });
-    setBeds(expanded);
-  }, [sharedBeds]);
+  const totals = sumBedTotals(sharedBeds);
+  const totalOccupancyPct = pctOf(totals);
 
-  const setSharedBedsProxy = (updater) => {
-    setBeds(updater);
-  };
-  const [lastUpdated, setLastUpdated] = useState({ time: fmt(new Date()), ts: Date.now(), prevOccupied: 0 });
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (now - lastUpdated.ts >= 10000) return;
-    const id = setInterval(() => setNow(Date.now()), 5000);
-    return () => clearInterval(id);
-  }, [lastUpdated.ts]);
-  const [filter,      setFilter]      = useState('All');
-
-  const stamp = (prev) => {
-    const prevOccupied = prev.filter(b => b.status === 'Occupied').length;
-    setLastUpdated({ time: fmt(new Date()), ts: Date.now(), prevOccupied });
+  const transition = async (bed, status, label) => {
+    setBusyId(bed.id);
+    try {
+      await bedService.update(bed.id, { status });
+      addToast({ type: 'success', title: `${bed.type} bed → ${label}` });
+    } catch (err) {
+      addToast({ type: 'critical', title: 'Update failed', message: err.response?.data?.message || err.message });
+    } finally {
+      setBusyId(null);
+    }
   };
 
-  // ── Derived stats ──────────────────────────────────────────────────────────
-  const total     = beds.length;
-  const occupied  = useMemo(() => beds.filter(b => b.status === 'Occupied').length,  [beds]);
-  const available = useMemo(() => beds.filter(b => b.status === 'Available').length, [beds]);
-  const cleaning  = useMemo(() => beds.filter(b => b.status === 'Cleaning').length,  [beds]);
+  if (loading) {
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
+      </div>
+    );
+  }
+  if (error) return <ErrorState description={error} onRetry={refetch} />;
 
-  const byType = (type) => beds.filter(b => b.type === type);
-
-  // Best available bed type
-  const bestType = ['ICU', 'General', 'Emergency'].reduce((best, type) => {
-    const t = byType(type);
-    const avail = t.filter(b => b.status === 'Available').length;
-    const bestAvail = byType(best).filter(b => b.status === 'Available').length;
-    return avail > bestAvail ? type : best;
-  }, 'General');
-
-  // Critical alerts
-  const criticalTypes = ['ICU', 'General', 'Emergency'].filter(type => {
-    const t = byType(type);
-    return pct(t.filter(b => b.status === 'Available').length, t.length) < 20;
-  });
-
-  // ── Actions ────────────────────────────────────────────────────────────────
-  const assignBed = () => {
-    setBeds(prev => {
-      stamp(prev);
-      const idx = prev.findIndex(b => b.status === 'Available');
-      if (idx === -1) return prev;
-      const updated = [...prev];
-      updated[idx] = { ...updated[idx], status: 'Occupied', patient: PATIENT_NAMES[Math.floor(Math.random() * PATIENT_NAMES.length)] };
-      return updated;
-    });
-  };
-
-  const releaseBed = () => {
-    setBeds(prev => {
-      stamp(prev);
-      const idx = prev.findIndex(b => b.status === 'Occupied');
-      if (idx === -1) return prev;
-      const updated = [...prev];
-      updated[idx] = { ...updated[idx], status: 'Cleaning', patient: null, cleaningStartedAt: Date.now() };
-      return updated;
-    });
-  };
-
-  const cleanBed = () => {
-    setBeds(prev => {
-      stamp(prev);
-      const idx = prev.findIndex(b => b.status === 'Cleaning');
-      if (idx === -1) return prev;
-      const updated = [...prev];
-      updated[idx] = { ...updated[idx], status: 'Available', patient: null };
-      return updated;
-    });
-  };
-
-  const simulateSurge = () => {
-    setBeds(prev => {
-      stamp(prev);
-      const updated = [...prev];
-      let surged = 0;
-      for (let i = 0; i < updated.length && surged < 5; i++) {
-        if (updated[i].status === 'Available') {
-          updated[i] = { ...updated[i], status: 'Occupied', patient: PATIENT_NAMES[surged % PATIENT_NAMES.length] };
-          surged++;
-        }
-      }
-      return updated;
-    });
-  };
-
-  const STATUS_ORDER = { Occupied: 0, Cleaning: 1, Available: 2 };
-  const filtered = (filter === 'All' ? beds : beds.filter(b => b.type === filter || b.status === filter))
-    .slice().sort((a, b) => {
-      const sd = (STATUS_ORDER[a.status] ?? 3) - (STATUS_ORDER[b.status] ?? 3);
-      return sd !== 0 ? sd : a.id.localeCompare(b.id);
-    });
-  const hasOccupied = occupied > 0;
-  const hasCleaning  = cleaning > 0;
-  const trend        = occupied - lastUpdated.prevOccupied;
+  const missingTypes = BED_TYPES.filter((t) => !sharedBeds.some((b) => b.type === t));
+  // Highest-occupancy type shown first so the bed type needing attention is never buried.
+  const sortedBeds = [...sharedBeds].sort((a, b) => pctOf(b) - pctOf(a));
+  const needsAttention = sortedBeds.filter((b) => pctOf(b) >= NEAR_CRITICAL_THRESHOLD);
 
   return (
-    <div className="space-y-6">
-      <ApiStatusBanner error={error} stale={stale} onRetry={refetch} />
+    <div className="space-y-6 animate-fade-in">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Total beds" value={totals.total} icon={BedDouble} tone="brand" />
+        <StatCard label="Available" value={totals.available} icon={UserCheck} tone="success" footnote={`${totals.total ? Math.round((totals.available / totals.total) * 100) : 0}% of capacity`} />
+        <StatCard label="Occupied" value={totals.occupied} icon={BedDouble} tone="critical" footnote={`${totalOccupancyPct}% occupancy`} />
+        <StatCard label="Cleaning" value={totals.cleaning} icon={Sparkles} tone="warning" />
+      </div>
 
-      {/* Header */}
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Bed Management</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Real-time bed allocation & capacity monitoring</p>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <span className="text-xs text-gray-400 dark:text-gray-500">
-            Last updated: {lastUpdated.time}{now - lastUpdated.ts < 10000 && <span className="ml-1 text-green-500 font-medium">· just now</span>}
-            {trend !== 0 && (
-              <span className={`ml-2 font-semibold ${trend > 0 ? 'text-red-500' : 'text-green-500'}`}>
-                {trend > 0 ? `+${trend} occupied` : `${Math.abs(trend)} freed`}
-              </span>
-            )}
-          </span>
-          <div className="flex flex-wrap gap-2">
-            <Tooltip text="Assigns an available bed to an incoming patient">
-              <button onClick={assignBed} className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition-colors">🛏 Assign Bed</button>
-            </Tooltip>
-            <Tooltip text="Marks an occupied bed as Cleaning">
-              <button onClick={releaseBed} disabled={!hasOccupied} className="px-3 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">🔄 Release Bed</button>
-            </Tooltip>
-            <Tooltip text="Marks a cleaning bed as Available">
-              <button onClick={cleanBed} disabled={!hasCleaning} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">✅ Mark Clean</button>
-            </Tooltip>
-            <Tooltip text="Fills 5 available beds to simulate a patient surge">
-              <button onClick={simulateSurge} className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition-colors">⚡ Simulate Surge</button>
-            </Tooltip>
+      {totals.total > 0 && (
+        <Card>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-surface-600 uppercase tracking-wide">Hospital-wide bed breakdown</p>
+            <p className="text-xs text-surface-400">{totals.available} available + {totals.occupied} occupied + {totals.cleaning} cleaning = {totals.total} total</p>
           </div>
-          <p className="text-xs text-gray-400 dark:text-gray-500">Tip: Use action buttons to assign, release, or clean beds</p>
-        </div>
-      </div>
-
-      {/* Critical alerts */}
-      {criticalTypes.map(type => (
-        <div key={type} className="flex items-center gap-3 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-xl px-4 py-3 animate-pulse">
-          <span className="text-red-500">⚠️</span>
-          <p className="text-sm font-semibold text-red-700 dark:text-red-400">{type} beds running low — less than 20% available</p>
-        </div>
-      ))}
-
-      {/* Best bed suggestion */}
-      <div title="Based on highest availability percentage and lowest occupancy" className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700 rounded-xl px-4 py-3 flex items-center gap-3 cursor-help">
-        <span className="text-indigo-500">💡</span>
-        <p className="text-sm text-indigo-700 dark:text-indigo-300">
-          Best available bed type: <span className="font-bold">{bestType}</span> — highest availability
-        </p>
-      </div>
-
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <SummaryCard label="Total Beds"     count={total}     total={total}     color="blue"   icon="🛏️" />
-        <SummaryCard label="Available"      count={available} total={total}     color="green"  icon="✅" />
-        <SummaryCard label="Occupied"       count={occupied}  total={total}     color="red"    icon="🔴" />
-        <SummaryCard label="Cleaning"       count={cleaning}  total={total}     color="yellow" icon="🧹" />
-      </div>
-
-      {/* Bed type breakdown */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-        {['ICU', 'General', 'Emergency'].map(type => (
-          <BedTypeCard key={type} type={type} beds={byType(type)} />
-        ))}
-      </div>
-
-      {/* Bed list table */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between flex-wrap gap-3">
-          <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">🛏️ Bed List</h2>
-          <div className="flex flex-wrap gap-2">
-            {['All', 'ICU', 'General', 'Emergency', 'Available', 'Occupied', 'Cleaning'].map(f => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-2.5 py-0.5 rounded-full text-xs font-semibold transition-colors ${
-                  filter === f ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
-                }`}
-              >{f}</button>
-            ))}
+          <div className="h-3 w-full rounded-full overflow-hidden flex bg-surface-100">
+            <div className="h-full bg-status-success" style={{ width: `${(totals.available / totals.total) * 100}%` }} title={`${totals.available} available`} />
+            <div className="h-full bg-status-critical" style={{ width: `${(totals.occupied / totals.total) * 100}%` }} title={`${totals.occupied} occupied`} />
+            <div className="h-full bg-status-warning" style={{ width: `${(totals.cleaning / totals.total) * 100}%` }} title={`${totals.cleaning} cleaning`} />
           </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 dark:bg-gray-800 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                <th className="px-4 py-3 text-left">Bed ID</th>
-                <th className="px-4 py-3 text-left">Type</th>
-                <th className="px-4 py-3 text-left">Status</th>
-                <th className="px-4 py-3 text-left">Patient</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
-              {filtered.map(bed => (
-                <tr key={bed.id} className="transition-all duration-300 hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                  <td className="px-4 py-3 font-mono font-bold text-gray-700 dark:text-gray-300">{bed.id}</td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{bed.type}</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[bed.status]}`}>{bed.status}</span>
-                    {bed.status === 'Cleaning' && bed.cleaningStartedAt && <CleaningTimer startedAt={bed.cleaningStartedAt} />}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{bed.patient ?? <span className="text-gray-300 dark:text-gray-600">—</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          <div className="flex gap-4 mt-2 text-xs text-surface-500">
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-status-success" /> Available</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-status-critical" /> Occupied</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-status-warning" /> Cleaning</span>
+          </div>
+        </Card>
+      )}
 
+      {needsAttention.length > 0 && (
+        <Card className="border-status-critical/30 bg-status-criticalBg/20">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} className="text-status-critical shrink-0" />
+            <p className="text-sm text-surface-800">
+              <span className="font-semibold">{needsAttention.length} bed type{needsAttention.length > 1 ? 's' : ''} at or above {NEAR_CRITICAL_THRESHOLD}% occupancy:</span>{' '}
+              {needsAttention.map((b) => `${b.type} (${pctOf(b)}%)`).join(', ')}
+            </p>
+          </div>
+        </Card>
+      )}
+
+      {sharedBeds.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={BedDouble}
+            title="No bed records yet"
+            description="Add a bed type to start tracking capacity for this hospital."
+            action={canManage && <Button icon={Plus} onClick={() => setShowAdd(true)}>Add bed type</Button>}
+          />
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {sortedBeds.map((bed) => {
+            const bedOccupancyPct = pctOf(bed);
+            const tone = bedOccupancyPct >= NEAR_CRITICAL_THRESHOLD ? 'critical' : bedOccupancyPct >= 60 ? 'warning' : 'success';
+            return (
+              <Card key={bed.id} hover className={bedOccupancyPct >= NEAR_CRITICAL_THRESHOLD ? 'border-status-critical/40' : ''}>
+                <CardHeader
+                  title={`${bed.type} Beds`}
+                  subtitle={`${bed.total} total capacity`}
+                  icon={BedDouble}
+                  action={<Badge tone={tone}>{bedOccupancyPct}% full</Badge>}
+                />
+                <ProgressBar value={bedOccupancyPct} tone={tone} className="mb-4" />
+                <div className="grid grid-cols-3 gap-2 text-center mb-4">
+                  <div>
+                    <p className="text-lg font-bold text-status-success">{bed.available}</p>
+                    <p className="text-[11px] text-surface-500">Available</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-status-critical">{bed.occupied}</p>
+                    <p className="text-[11px] text-surface-500">Occupied</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-status-warning">{bed.cleaning}</p>
+                    <p className="text-[11px] text-surface-500">Cleaning</p>
+                  </div>
+                </div>
+                {canManage && (
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm" variant="secondary" className="flex-1" icon={ArrowRight}
+                      disabled={bed.available === 0 || busyId === bed.id}
+                      loading={busyId === bed.id}
+                      onClick={() => transition(bed, 'occupied', 'Occupied')}
+                    >
+                      Occupy
+                    </Button>
+                    <Button
+                      size="sm" variant="secondary" className="flex-1"
+                      disabled={bed.occupied === 0 || busyId === bed.id}
+                      onClick={() => transition(bed, 'cleaning', 'Cleaning')}
+                    >
+                      Discharge
+                    </Button>
+                    <Button
+                      size="sm" variant="secondary" className="flex-1"
+                      disabled={bed.cleaning === 0 || busyId === bed.id}
+                      onClick={() => transition(bed, 'available', 'Available')}
+                    >
+                      Ready
+                    </Button>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+
+          {canManage && missingTypes.length > 0 && (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="border-2 border-dashed border-surface-300 rounded-card flex flex-col items-center justify-center gap-2 text-surface-400 hover:border-brand-400 hover:text-brand-600 transition-colors min-h-[200px]"
+            >
+              <Plus size={22} />
+              <span className="text-sm font-medium">Add {missingTypes[0]} beds</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <AddBedModal
+          hospitalId={hospitalId}
+          missingTypes={missingTypes}
+          onClose={() => setShowAdd(false)}
+          onCreated={() => { setShowAdd(false); refetch(); }}
+        />
+      )}
     </div>
+  );
+}
+
+function AddBedModal({ hospitalId, missingTypes, onClose, onCreated }) {
+  const { addToast } = useNotifications();
+  const [type, setType] = useState(missingTypes[0] || BED_TYPES[0]);
+  const [total, setTotal] = useState(10);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const totalNum = Number(total);
+    if (Number.isNaN(totalNum) || totalNum <= 0) { setErr('Total capacity must be greater than 0.'); return; }
+    setSaving(true);
+    setErr('');
+    try {
+      await bedService.create({ hospitalId, type, total: totalNum, available: totalNum, occupied: 0, cleaning: 0 });
+      addToast({ type: 'success', title: `${type} beds added`, message: `${total} beds now tracked` });
+      onCreated();
+    } catch (e2) {
+      setErr(e2.response?.data?.message || 'Failed to add bed type');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Add bed type" onClose={onClose}>
+      {err && <p className="text-xs text-status-critical mb-3">{err}</p>}
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label htmlFor="bed-type" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Bed type</label>
+          <select id="bed-type" value={type} onChange={(e) => setType(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm">
+            {missingTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bed-total" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Total capacity</label>
+          <input id="bed-total" type="number" min="1" value={total} onChange={(e) => setTotal(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm" />
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>Cancel</Button>
+          <Button type="submit" className="flex-1" loading={saving}>Add</Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

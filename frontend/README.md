@@ -1,16 +1,41 @@
-# React + Vite
+# JEEVANsetu — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + Vite + Tailwind CSS frontend for the JEEVANsetu healthcare
+operations platform. See the [root README](../README.md) for the full
+project overview, architecture, and setup instructions — this file covers
+frontend-specific details only.
 
-Currently, two official plugins are available:
+## Structure
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```
+src/
+  components/ui/     Shared design-system primitives (Badge, Card, StatCard, Button, States)
+  components/         Feature components (CityMap, NotificationCenter, GuidedTour)
+  constants/enums.js   Mirrors backend/src/constants/enums.js — status vocabulary + tone metadata
+  layouts/             AppLayout, Sidebar, Topbar
+  lib/socket.js        Socket.IO client wrapper
+  pages/               One file per route
+  services/api.js      Axios instance, auth token handling, silent refresh, all API service objects
+  utils/AuthContext.jsx    JWT-based auth state
+  utils/hospitalStore.jsx  Shared beds/doctors/inventory state + realtime subscriptions
+  utils/notificationStore.jsx  Toast + notification center state
+  utils/eventBus.js    Lightweight pub/sub so any page can trigger a notification
+```
 
-## React Compiler
+## Design system
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Palette:** `brand` (clinical teal) and `surface` (cool slate) scales in
+  `tailwind.config.js`, plus semantic `status.*` tokens (success/warning/critical/info)
+  used consistently by every `Badge`/`StatCard`/chart in the app.
+- **Icons:** [lucide-react](https://lucide.dev) throughout — no emoji-as-icon.
+- **Components:** build new UI from `components/ui/` primitives rather than
+  one-off styled `<div>`s, so a palette or spacing change propagates everywhere.
 
-## Expanding the ESLint configuration
+## Commands
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npm run dev       # start dev server on :5173 (proxies /api and /socket.io to :5000)
+npm run build     # production build to dist/
+npm run lint      # ESLint (includes React Compiler's stricter hooks rules)
+npm run preview   # preview the production build locally
+```

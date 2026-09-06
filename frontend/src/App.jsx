@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Activity } from 'lucide-react';
 import AppLayout from './layouts/AppLayout';
 import { HospitalProvider } from './utils/hospitalStore.jsx';
 import { AuthProvider, useAuth } from './utils/AuthContext.jsx';
@@ -15,31 +16,34 @@ const Inventory    = lazy(() => import('./pages/Inventory'));
 const Login        = lazy(() => import('./pages/Login'));
 const Signup       = lazy(() => import('./pages/Signup'));
 const Admissions   = lazy(() => import('./pages/Admissions'));
+const AuditLog     = lazy(() => import('./pages/AuditLog'));
 const Unauthorized = lazy(() => import('./pages/Unauthorized'));
 
 const LOADING_MESSAGES = {
-  '/dashboard': 'Loading dashboard...',
-  '/city':      'Loading city data...',
-  '/opd':       'Loading OPD system...',
-  '/beds':      'Loading bed management...',
-  '/doctors':   'Loading doctors...',
-  '/inventory':  'Loading inventory...',
-  '/admissions': 'Loading Smart Admissions...',
-  '/login':     'Loading...',
-  '/signup':    'Loading...',
+  '/dashboard': 'Loading dashboard…',
+  '/city':      'Loading city operations…',
+  '/opd':       'Loading OPD queue…',
+  '/beds':      'Loading bed management…',
+  '/doctors':   'Loading doctor roster…',
+  '/inventory':  'Loading inventory…',
+  '/admissions': 'Loading Smart Admissions…',
+  '/audit':      'Loading activity log…',
+  '/login':     'Loading…',
+  '/signup':    'Loading…',
 };
 
 function PageLoader() {
   const { pathname } = useLocation();
   return (
-    <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex items-center justify-center h-screen bg-surface-50">
       <div className="flex flex-col items-center gap-4">
-        <div className="relative">
-          <div className="w-12 h-12 rounded-full border-4 border-gray-300 dark:border-gray-700" />
-          <div className="absolute inset-0 w-12 h-12 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin" />
+        <div className="relative w-12 h-12">
+          <div className="w-12 h-12 rounded-full border-4 border-surface-200" />
+          <div className="absolute inset-0 w-12 h-12 rounded-full border-4 border-brand-500 border-t-transparent animate-spin" />
+          <Activity className="absolute inset-0 m-auto text-brand-600" size={16} />
         </div>
-        <p className="text-gray-500 dark:text-gray-400 text-sm tracking-wide">
-          {LOADING_MESSAGES[pathname] ?? 'Loading page...'}
+        <p className="text-surface-500 text-sm tracking-wide">
+          {LOADING_MESSAGES[pathname] ?? 'Loading page…'}
         </p>
       </div>
     </div>
@@ -53,36 +57,46 @@ function GuestRoute({ children }) {
   return children;
 }
 
+function AppRoutes() {
+  const { loading } = useAuth();
+  if (loading) return <PageLoader />;
+
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <Routes>
+        {/* Guest routes */}
+        <Route path="/login"  element={<GuestRoute><Login /></GuestRoute>} />
+        <Route path="/signup" element={<GuestRoute><Signup /></GuestRoute>} />
+        <Route path="/unauthorized" element={<Unauthorized />} />
+
+        {/* Protected app routes — auth + RBAC handled inside AppLayout */}
+        <Route element={<AppLayout />}>
+          <Route path="/dashboard"  element={<Dashboard />}  />
+          <Route path="/city"       element={<City />}       />
+          <Route path="/opd"        element={<OPD />}        />
+          <Route path="/beds"       element={<Beds />}       />
+          <Route path="/doctors"    element={<Doctors />}    />
+          <Route path="/inventory"  element={<Inventory />}  />
+          <Route path="/admissions" element={<Admissions />} />
+          <Route path="/audit"      element={<AuditLog />}   />
+        </Route>
+
+        {/* Default: redirect to login */}
+        <Route index element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <HospitalProvider>
           <NotificationProvider>
-          <ToastStack />
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              {/* Guest routes */}
-              <Route path="/login"  element={<GuestRoute><Login /></GuestRoute>} />
-              <Route path="/signup" element={<GuestRoute><Signup /></GuestRoute>} />
-              <Route path="/unauthorized" element={<Unauthorized />} />
-
-              {/* Protected app routes — auth + RBAC handled inside AppLayout */}
-              <Route element={<AppLayout />}>
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/city"      element={<City />}      />
-                <Route path="/opd"       element={<OPD />}       />
-                <Route path="/beds"      element={<Beds />}      />
-                <Route path="/doctors"   element={<Doctors />}   />
-                <Route path="/inventory"  element={<Inventory />}  />
-                <Route path="/admissions" element={<Admissions />} />
-              </Route>
-
-              {/* Default: redirect to login */}
-              <Route index element={<Navigate to="/login" replace />} />
-              <Route path="*" element={<Navigate to="/login" replace />} />
-            </Routes>
-          </Suspense>
+            <ToastStack />
+            <AppRoutes />
           </NotificationProvider>
         </HospitalProvider>
       </AuthProvider>

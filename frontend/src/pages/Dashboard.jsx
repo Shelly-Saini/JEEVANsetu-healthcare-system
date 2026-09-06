@@ -1,331 +1,266 @@
-import { useEffect, useState } from 'react';
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-} from 'recharts';
-import { dashboardService } from '../services/api';
-
-// ─── Animated Number ─────────────────────────────────────────────────────────
-
-function AnimatedNumber({ value }) {
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    let start = 0;
-    const step = Math.ceil(value / 20);
-    const interval = setInterval(() => {
-      start += step;
-      if (start >= value) { setCount(value); clearInterval(interval); }
-      else { setCount(start); }
-    }, 20);
-    return () => clearInterval(interval);
-  }, [value]);
-  return <span>{count}</span>;
-}
-
-// ─── Small reusable components ────────────────────────────────────────────────
-
-function StatCard({ label, value, sub, color = 'indigo' }) {
-  const colors = {
-    indigo: 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300',
-    green:  'bg-green-50  dark:bg-green-900/20  text-green-700  dark:text-green-300',
-    yellow: 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300',
-    red:    'bg-red-50    dark:bg-red-900/20    text-red-700    dark:text-red-300',
-    blue:   'bg-blue-50   dark:bg-blue-900/20   text-blue-700   dark:text-blue-300',
-  };
-  return (
-    <div className={`rounded-xl p-4 transition-all duration-300 ease-in-out hover:scale-[1.02] hover:shadow-xl ${colors[color]}`}>
-      <p className="text-xs font-medium uppercase tracking-wide opacity-70">{label}</p>
-      <p className="text-3xl font-bold mt-1">{value}</p>
-      {sub && <p className="text-xs mt-1 opacity-60">{sub}</p>}
-    </div>
-  );
-}
-
-function SectionCard({ title, icon, children }) {
-  return (
-    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 p-5 transition-all duration-300 ease-in-out hover:scale-[1.02] hover:shadow-xl">
-      <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-4 flex items-center gap-2">
-        <span>{icon}</span>{title}
-      </h2>
-      {children}
-    </div>
-  );
-}
-
-function ProgressBar({ pct, color = 'bg-indigo-500' }) {
-  return (
-    <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2 mt-1">
-      <div
-        className={`${color} h-2 rounded-full transition-all duration-500`}
-        style={{ width: `${Math.min(pct, 100)}%` }}
-      />
-    </div>
-  );
-}
-
-function BedRow({ type, data }) {
-  const pct   = data?.occupancyPct ?? 0;
-  const color = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500';
-  return (
-    <div className="mb-4">
-      <div className="flex justify-between text-sm mb-1">
-        <span className="font-medium text-gray-700 dark:text-gray-300">{type}</span>
-        <span className="text-gray-500 dark:text-gray-400">
-          {data?.available ?? 0} free / {data?.total ?? 0} total
-          <span className="ml-2 font-semibold">{pct}%</span>
-        </span>
-      </div>
-      <ProgressBar pct={pct} color={color} />
-    </div>
-  );
-}
-
-// ─── Scale On Change ────────────────────────────────────────────────────────
-
-function ScaleOnChange({ value, children }) {
-  const [scale, setScale] = useState(1);
-  useEffect(() => {
-    setScale(1.05);
-    const t = setTimeout(() => setScale(1), 300);
-    return () => clearTimeout(t);
-  }, [value]);
-  return (
-    <div style={{ transform: `scale(${scale})`, transition: 'transform 300ms ease-in-out', willChange: 'transform' }}>
-      {children}
-    </div>
-  );
-}
-
-// ─── Stress Score Card ────────────────────────────────────────────────────────
-
-function StressScoreCard({ stress }) {
-  const { score, label, breakdown } = stress;
-  const ring  = label === 'High' ? 'border-red-500'    : label === 'Medium' ? 'border-yellow-500' : 'border-green-500';
-  const text  = label === 'High' ? 'text-red-600'      : label === 'Medium' ? 'text-yellow-600'   : 'text-green-600';
-  const badge = label === 'High' ? 'bg-red-100 text-red-700' : label === 'Medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
-
-  return (
-    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 p-6 flex flex-col sm:flex-row items-center gap-6">
-      {/* Score ring */}
-      <div className={`w-28 h-28 rounded-full border-8 ${ring} flex flex-col items-center justify-center shrink-0`}>
-        <ScaleOnChange value={score}>
-          <span className={`text-4xl font-black ${text}`}><AnimatedNumber value={score} /></span>
-        </ScaleOnChange>
-        <span className="text-xs text-gray-400">/100</span>
-        <span className="text-xs text-gray-500 mt-1 block">▲ +{score % 7 + 1} from last</span>
-      </div>
-
-      <div className="flex-1 w-full">
-        <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100">Hospital Stress Score</h2>
-          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badge}`}>{label}</span>
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label: 'OPD Load',        value: breakdown.opdLoad,        color: 'bg-indigo-500' },
-            { label: 'Bed Occupancy',   value: breakdown.bedOccupancy,   color: 'bg-orange-500' },
-            { label: 'Doctor Pressure', value: breakdown.doctorPressure, color: 'bg-pink-500'   },
-          ].map(({ label: l, value, color }) => (
-            <div key={l}>
-              <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
-                <span>{l}</span><span className="font-semibold">{value}%</span>
-              </div>
-              <ProgressBar pct={value} color={color} />
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Severity Bar Chart ───────────────────────────────────────────────────────
-
-const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e' };
-
-function SeverityChart({ bySeverity }) {
-  const data = Object.entries(bySeverity).map(([name, value]) => ({ name, value }));
-  return (
-    <ResponsiveContainer width="100%" height={140}>
-      <BarChart data={data} barSize={32}>
-        <XAxis dataKey="name" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-        <YAxis hide />
-        <Tooltip
-          contentStyle={{ borderRadius: 8, fontSize: 12 }}
-          formatter={(v) => [v, 'Patients']}
-        />
-        <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-          {data.map((entry) => (
-            <Cell key={entry.name} fill={SEVERITY_COLORS[entry.name]} />
-          ))}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── Loading Skeleton ─────────────────────────────────────────────────────────
-
-function Skeleton({ className = '' }) {
-  return <div className={`animate-pulse bg-gray-200 dark:bg-gray-800 rounded-xl ${className}`} />;
-}
-
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-6">
-      <Skeleton className="h-36 w-full" />
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-24" />)}
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Skeleton className="h-64" />
-        <Skeleton className="h-64" />
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Dashboard ───────────────────────────────────────────────────────────
+import { useState, useEffect, useCallback } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from 'recharts';
+import { Activity, BedDouble, Stethoscope, Users, Package, TrendingUp, TrendingDown, Minus, Sparkles } from 'lucide-react';
+import { useAuth } from '../utils/AuthContext.jsx';
+import { dashboardService, forecastService } from '../services/api.js';
+import { getSocket } from '../lib/socket.js';
+import { STRESS_LABEL_META } from '../constants/enums.js';
+import { formatHours } from '../utils/formatDuration.js';
+import { Card, CardHeader, StatCard } from '../components/ui/Card.jsx';
+import { ProgressBar } from '../components/ui/Button.jsx';
+import { ErrorState, EmptyState } from '../components/ui/States.jsx';
+import Badge from '../components/ui/Badge.jsx';
 
 export default function Dashboard() {
-  const [data,        setData]        = useState(null);
-  const [loading,     setLoading]     = useState(true);
-  const [error,       setError]       = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(null);
+  const { user } = useAuth();
+  const [data, setData] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [forecast, setForecast] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const stampNow = () => setLastUpdated(new Date().toLocaleTimeString('en-GB'));
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const [dashRes, histRes, fcRes] = await Promise.all([
+        dashboardService.get(user.hospitalId),
+        dashboardService.history(user.hospitalId, 24),
+        forecastService.get(user.hospitalId, 24),
+      ]);
+      setData(dashRes.data.data);
+      setHistory(histRes.data.data || []);
+      setForecast(fcRes.data.data);
+    } catch (err) {
+      setError(err.response?.data?.message || err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [user.hospitalId]);
 
-  // Read hospitalId from the authenticated user so every role sees their own hospital.
-  // Falls back to 'h1' only if no user is stored (e.g. direct URL access in dev).
-  const storedUser = (() => {
-    try { return JSON.parse(localStorage.getItem('jeevan_user')); } catch { return null; }
-  })();
-  const hospitalId = storedUser?.hospitalId || 'h1';
+  useEffect(() => { load(); }, [load]);
 
+  // Live-refresh the dashboard when any resource changes (debounced-ish via a single re-fetch per burst is skipped for simplicity/portfolio clarity)
   useEffect(() => {
-    dashboardService.get(hospitalId)
-      .then((res) => { setData(res.data.data); stampNow(); })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [hospitalId]);
+    const socket = getSocket();
+    if (!socket) return undefined;
+    const refresh = () => load();
+    ['bed:update', 'doctor:update', 'opd:update', 'inventory:update', 'admission:decided'].forEach((e) => socket.on(e, refresh));
+    return () => ['bed:update', 'doctor:update', 'opd:update', 'inventory:update', 'admission:decided'].forEach((e) => socket.off(e, refresh));
+  }, [load]);
 
-  if (loading) return <LoadingSkeleton />;
+  if (loading) return <DashboardSkeleton />;
+  if (error) return <ErrorState description={error} onRetry={load} />;
+  if (!data) return null;
 
-  if (error) return (
-    <div className="flex items-center justify-center h-64">
-      <div className="text-center">
-        <p className="text-4xl mb-2">⚠️</p>
-        <p className="text-red-500 font-medium">{error}</p>
-        <p className="text-gray-400 text-sm mt-1">Make sure the backend is running on port 5000</p>
+  const { hospital, opd, beds, doctors, inventoryAlerts, stressScore } = data;
+  const stressMeta = STRESS_LABEL_META[stressScore.label] || STRESS_LABEL_META.Low;
+
+  const chartData = history.map((h) => ({
+    time: new Date(h.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    stress: h.stressScore,
+  }));
+
+  const severityChart = [
+    { name: 'Critical', value: opd.bySeverity.critical },
+    { name: 'High', value: opd.bySeverity.high },
+    { name: 'Medium', value: opd.bySeverity.medium },
+    { name: 'Low', value: opd.bySeverity.low },
+  ];
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <div>
+        <h2 className="text-lg font-bold text-surface-900">{hospital.name}</h2>
+        <p className="text-sm text-surface-500">{hospital.address} · {hospital.city}</p>
+      </div>
+
+      {/* Stress score hero */}
+      <Card className="bg-gradient-to-br from-surface-900 to-surface-800 text-white border-none">
+        <div className="flex flex-col sm:flex-row items-center gap-6">
+          <StressRing score={stressScore.score} label={stressScore.label} />
+          <div className="flex-1 w-full">
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-sm font-medium text-surface-300">Hospital Stress Score</p>
+              <Badge tone={stressMeta.tone}>{stressScore.label}</Badge>
+            </div>
+            <p className="text-xs text-surface-400 mb-4">Weighted: 40% OPD load · 40% bed occupancy · 20% doctor pressure</p>
+            <div className="space-y-2.5">
+              <BreakdownRow label="OPD load" value={stressScore.breakdown.opdLoad} />
+              <BreakdownRow label="Bed occupancy" value={stressScore.breakdown.bedOccupancy} />
+              <BreakdownRow label="Doctor pressure" value={stressScore.breakdown.doctorPressure} />
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Active OPD patients" value={opd.active} icon={Users} tone="brand" footnote={`${opd.total} registered today`} />
+        <StatCard label="Beds available" value={`${beds.summary.available}/${beds.summary.total}`} icon={BedDouble} tone={beds.summary.available === 0 ? 'critical' : 'success'} />
+        <StatCard label="Doctors available" value={`${doctors.available}/${doctors.total}`} icon={Stethoscope} tone="info" footnote={`${doctors.busy} busy · ${doctors.unavailable} off`} />
+        <StatCard label="Inventory alerts" value={inventoryAlerts.count} icon={Package} tone={inventoryAlerts.count > 0 ? 'warning' : 'success'} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2">
+          <CardHeader title="Stress score — last 24 hours" subtitle="Recorded automatically every few minutes" icon={Activity} />
+          {chartData.length < 2 ? (
+            <EmptyState title="Not enough history yet" description="Check back after a few snapshot cycles." />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eef1f3" />
+                <XAxis dataKey="time" tick={{ fontSize: 11, fill: '#98a3ac' }} axisLine={false} tickLine={false} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#98a3ac' }} axisLine={false} tickLine={false} />
+                <RTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #dfe4e8' }} />
+                <Line type="monotone" dataKey="stress" stroke="#0d7f71" strokeWidth={2.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader title="Forecast" subtitle="Explainable linear trend projection" icon={Sparkles} />
+          <ForecastPanel forecast={forecast} />
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2">
+          <CardHeader title="OPD queue by severity" icon={Users} />
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={severityChart} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eef1f3" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#98a3ac' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: '#98a3ac' }} axisLine={false} tickLine={false} allowDecimals={false} />
+              <RTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #dfe4e8' }} />
+              <Bar dataKey="value" fill="#159e8c" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        <Card>
+          <CardHeader title="Inventory alerts" icon={Package} />
+          {inventoryAlerts.items.length === 0 ? (
+            <EmptyState title="All stock healthy" description="No items below their minimum threshold." />
+          ) : (
+            <ul className="space-y-2">
+              {inventoryAlerts.items.slice(0, 6).map((item) => (
+                <li key={item.id} className="flex items-center justify-between text-sm">
+                  <span className="text-surface-700">{item.item}</span>
+                  <Badge tone={item.status === 'critical' ? 'critical' : 'warning'}>{item.status}</Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
       </div>
     </div>
   );
+}
 
-  const { hospital, opd, beds, doctors, inventoryAlerts, stressScore } = data;
+function StressRing({ score, label }) {
+  const color = label === 'High' ? '#c22b3f' : label === 'Medium' ? '#b5730a' : '#12946b';
+  const circumference = 2 * Math.PI * 42;
+  const offset = circumference - (score / 100) * circumference;
+  return (
+    <div className="relative w-28 h-28 shrink-0">
+      <svg className="w-28 h-28 -rotate-90">
+        <circle cx="56" cy="56" r="42" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="10" />
+        <circle cx="56" cy="56" r="42" fill="none" stroke={color} strokeWidth="10" strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round" style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-2xl font-bold text-white">{score}</span>
+        <span className="text-[10px] text-surface-400">/ 100</span>
+      </div>
+    </div>
+  );
+}
+
+function BreakdownRow({ label, value }) {
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-surface-300 mb-1"><span>{label}</span><span className="font-medium">{value}%</span></div>
+      <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
+        <div className="h-full bg-brand-400 rounded-full transition-all duration-500" style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ForecastPanel({ forecast }) {
+  if (!forecast?.available) {
+    return <EmptyState icon={Sparkles} title="Not enough history yet" description={forecast?.reason || 'Forecasting needs a few more recorded snapshots.'} />;
+  }
+  const { bedTrend, stressTrend, horizonHours, sampleSize } = forecast;
+  const horizonDays = Math.round(horizonHours / 24);
+
+  const trendIconEl = (dir, size = 14, className = '') => {
+    if (dir === 'declining' || dir === 'rising') return <TrendingUp size={size} className={className} />;
+    if (dir === 'improving' || dir === 'falling') return <TrendingDown size={size} className={className} />;
+    return <Minus size={size} className={className} />;
+  };
 
   return (
-    <div className="space-y-6">
-
-      {/* Hospital name */}
+    <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{hospital.name}</h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{hospital.address}</p>
-      </div>
-
-      {lastUpdated && (
-        <p className="text-xs text-gray-400 text-right tracking-wide">⏱ Last updated: {lastUpdated}</p>
-      )}
-
-      {/* Stress Score */}
-      <StressScoreCard stress={stressScore} />
-
-      {/* OPD Summary */}
-      <SectionCard title="OPD Queue" icon="🪑">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-          <StatCard label="Total Patients"  value={<ScaleOnChange value={opd.total}><AnimatedNumber value={opd.total} /></ScaleOnChange>}              color="indigo" />
-          <StatCard label="Active"          value={opd.active}             color="blue"   />
-          <StatCard label="Completed"       value={opd.completed}          color="green"  />
-          <div className={opd.bySeverity.critical > 0 ? 'rounded-xl border border-red-300 shadow-lg shadow-red-200 animate-[pulse_2s_infinite]' : ''}>
-            <StatCard label="Critical"        value={opd.bySeverity.critical} color="red"   />
-          </div>
+        <div className="flex items-center gap-1.5 mb-1">
+          {trendIconEl(bedTrend.direction, 14, bedTrend.direction === 'declining' ? 'text-status-critical' : bedTrend.direction === 'improving' ? 'text-status-success' : 'text-surface-400')}
+          <p className="text-xs font-semibold text-surface-600 uppercase tracking-wide">Bed availability</p>
         </div>
-        <p className="text-xs font-semibold text-gray-400 uppercase mb-2">Severity Breakdown</p>
-        <SeverityChart bySeverity={opd.bySeverity} />
-      </SectionCard>
-
-      {/* Beds + Doctors row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-        {/* Beds */}
-        <SectionCard title="Bed Availability" icon="🛏️">
-          <div className="grid grid-cols-3 gap-3 mb-5">
-            <StatCard label="Total"     value={<AnimatedNumber value={beds.summary.total} />}     color="indigo" />
-            <StatCard label="Available" value={<AnimatedNumber value={beds.summary.available} />} color="green"  />
-            <StatCard label="Occupied"  value={<AnimatedNumber value={beds.summary.occupied} />}  color="red"    />
-          </div>
-          {Object.entries(beds.byType).map(([type, d]) => (
-            <BedRow key={type} type={type} data={d} />
-          ))}
-        </SectionCard>
-
-        {/* Doctors */}
-        <SectionCard title="Doctor Availability" icon="👨‍⚕️">
-          <div className="grid grid-cols-3 gap-3 mb-5">
-            <StatCard label="Total"       value={doctors.total}       color="indigo" />
-            <StatCard label="Available"   value={doctors.available}   color="green"  />
-            <StatCard label="Busy"        value={doctors.busy}        color="yellow" />
-          </div>
-          <p className="text-xs font-semibold text-gray-400 uppercase mb-3">By Department</p>
-          <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-hide">
-            {Object.entries(doctors.byDepartment).map(([dept, counts]) => (
-              <div key={dept} className="flex items-center justify-between text-sm">
-                <span className="text-gray-700 dark:text-gray-300 font-medium">{dept}</span>
-                <div className="flex gap-2 text-xs">
-                  <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700">{counts.available} avail</span>
-                  <span className="px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">{counts.busy} busy</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      </div>
-
-      {/* Inventory Alerts */}
-      <SectionCard title="Inventory Alerts" icon="📦">
-        {inventoryAlerts.count === 0 ? (
-          <p className="text-green-600 text-sm font-medium">✅ All inventory levels are healthy</p>
+        {bedTrend.direction === 'stable' ? (
+          <p className="text-sm text-surface-700">Holding steady — no meaningful change in the recent trend.</p>
+        ) : bedTrend.hoursToShortage != null ? (
+          <p className="text-sm text-surface-700">
+            Trending <span className="font-semibold">{bedTrend.direction}</span> at {Math.abs(bedTrend.slopePerHour)} beds/hour.{' '}
+            <span className="text-status-critical font-medium">Could run out of beds in {formatHours(bedTrend.hoursToShortage)} at this rate.</span>
+          </p>
         ) : (
-          <>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-              <span className="font-bold text-red-600">{inventoryAlerts.count}</span> item{inventoryAlerts.count > 1 ? 's' : ''} need attention
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {inventoryAlerts.items.map((item) => (
-                <div
-                  key={item.id}
-                  className={`rounded-xl p-3 border ${
-                    item.status === 'critical'
-                      ? 'bg-red-50 border-red-300 dark:bg-red-900/20 dark:border-red-800 shadow-lg shadow-red-200 animate-[pulse_2s_infinite]'
-                      : 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">{item.item}</span>
-                    <span className={`text-xs font-bold uppercase px-2 py-0.5 rounded-full ${
-                      item.status === 'critical' ? 'bg-red-200 text-red-800' : 'bg-yellow-200 text-yellow-800'
-                    }`}>
-                      {item.status}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {item.quantity} {item.unit} · min {item.minThreshold}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </>
+          <p className="text-sm text-surface-700">
+            {bedTrend.direction === 'declining' ? (
+              <>Slowly declining, but not projected to cause a shortage within the next {horizonDays} days at this rate.</>
+            ) : (
+              <>Improving — availability is trending up.</>
+            )}
+          </p>
         )}
-      </SectionCard>
+      </div>
+      <div>
+        <div className="flex items-center gap-1.5 mb-1">
+          {trendIconEl(stressTrend.direction, 14, stressTrend.direction === 'rising' ? 'text-status-critical' : stressTrend.direction === 'falling' ? 'text-status-success' : 'text-surface-400')}
+          <p className="text-xs font-semibold text-surface-600 uppercase tracking-wide">Stress score</p>
+        </div>
+        {stressTrend.direction === 'stable' ? (
+          <p className="text-sm text-surface-700">Holding steady — no meaningful change in the recent trend.</p>
+        ) : stressTrend.hoursToHigh != null ? (
+          <p className="text-sm text-surface-700">
+            Trending <span className="font-semibold">{stressTrend.direction}</span> at {Math.abs(stressTrend.slopePerHour)} pts/hour.{' '}
+            <span className="text-status-warning font-medium">Could reach High stress in {formatHours(stressTrend.hoursToHigh)}.</span>
+          </p>
+        ) : (
+          <p className="text-sm text-surface-700">
+            {stressTrend.direction === 'rising' ? (
+              <>Rising, but not projected to reach High stress within the next {horizonDays} days at this rate.</>
+            ) : (
+              <>Falling — hospital load is trending down.</>
+            )}
+          </p>
+        )}
+      </div>
+      <p className="text-[11px] text-surface-400 pt-2 border-t border-surface-100">
+        Based on {sampleSize} recorded snapshots · linear trend projection, not a black-box model · {horizonDays}-day forecast horizon
+      </p>
+    </div>
+  );
+}
 
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="h-32 bg-surface-100 rounded-card animate-pulse" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-28 bg-surface-100 rounded-card animate-pulse" />)}
+      </div>
+      <div className="h-64 bg-surface-100 rounded-card animate-pulse" />
     </div>
   );
 }

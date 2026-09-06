@@ -1,475 +1,263 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo } from 'react';
+import { Package, Plus, AlertTriangle, Minus, Search, Info } from 'lucide-react';
 import { useHospital } from '../utils/hospitalStore.jsx';
-import { onEvent, emitEvent } from '../utils/eventBus.js';
-import Tooltip from '../components/Tooltip.jsx';
+import { useAuth } from '../utils/AuthContext.jsx';
+import { useNotifications } from '../utils/notificationStore.jsx';
+import { emitEvent } from '../utils/eventBus.js';
+import { inventoryService } from '../services/api.js';
+import { INVENTORY_CATEGORIES, INVENTORY_STATUS_META } from '../constants/enums.js';
+import { Card, CardHeader, StatCard } from '../components/ui/Card.jsx';
+import { Button, ProgressBar } from '../components/ui/Button.jsx';
+import { EmptyState, ErrorState, CardSkeleton } from '../components/ui/States.jsx';
+import Modal from '../components/ui/Modal.jsx';
+import Badge from '../components/ui/Badge.jsx';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const CATEGORIES = ['PPE', 'Medicines', 'Equipment', 'Emergency'];
-
-const INITIAL_ITEMS = [
-  { id: 'I01', name: 'Surgical Masks',      category: 'PPE',       quantity: 120, minRequired: 200 },
-  { id: 'I02', name: 'Nitrile Gloves',      category: 'PPE',       quantity: 300, minRequired: 400 },
-  { id: 'I03', name: 'Face Shields',        category: 'PPE',       quantity: 40,  minRequired: 100 },
-  { id: 'I04', name: 'Gowns',              category: 'PPE',       quantity: 85,  minRequired: 150 },
-  { id: 'I05', name: 'Paracetamol',         category: 'Medicines', quantity: 500, minRequired: 600 },
-  { id: 'I06', name: 'Amoxicillin',         category: 'Medicines', quantity: 80,  minRequired: 300 },
-  { id: 'I07', name: 'IV Fluids',           category: 'Medicines', quantity: 60,  minRequired: 120 },
-  { id: 'I08', name: 'Insulin',             category: 'Medicines', quantity: 25,  minRequired: 80  },
-  { id: 'I09', name: 'Pulse Oximeter',      category: 'Equipment', quantity: 18,  minRequired: 20  },
-  { id: 'I10', name: 'BP Monitor',          category: 'Equipment', quantity: 10,  minRequired: 15  },
-  { id: 'I11', name: 'Ventilator',          category: 'Equipment', quantity: 3,   minRequired: 8   },
-  { id: 'I12', name: 'Syringe (10ml)',      category: 'Equipment', quantity: 400, minRequired: 500 },
-  { id: 'I13', name: 'Defibrillator Pads',  category: 'Emergency', quantity: 12,  minRequired: 30  },
-  { id: 'I14', name: 'Epinephrine',         category: 'Emergency', quantity: 8,   minRequired: 50  },
-  { id: 'I15', name: 'Oxygen Cylinders',    category: 'Emergency', quantity: 15,  minRequired: 25  },
-  { id: 'I16', name: 'Crash Cart Supplies', category: 'Emergency', quantity: 5,   minRequired: 10  },
-];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const fmt   = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
-const avgOf = (arr) => arr.length ? Math.round(arr.reduce((s, v) => s + v, 0) / arr.length) : 0;
-
-const computeStatus = ({ quantity, minThreshold }) => {
-  if (quantity >= minThreshold)              return 'OK';
-  if (quantity >= minThreshold * 0.5)        return 'Low';
-  return 'Critical';
-};
-
-const shortagePct = ({ quantity, minThreshold }) =>
-  minThreshold > 0 ? Math.round(((minThreshold - quantity) / minThreshold) * 100) : 0;
-
-// stock level as % of minThreshold (capped at 100)
-const stockPct = ({ quantity, minThreshold }) =>
-  minThreshold > 0 ? Math.min(Math.round((quantity / minThreshold) * 100), 100) : 100;
-
-const withStatus = (items) => items.map(i => ({ ...i, status: computeStatus(i) }));
-
-const STATUS_ORDER = { Critical: 0, Low: 1, OK: 2 };
-
-const STATUS_STYLE = {
-  OK:       'bg-green-100  text-green-700  dark:bg-green-900/30  dark:text-green-400',
-  Low:      'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
-  Critical: 'bg-red-100    text-red-700    dark:bg-red-900/30    dark:text-red-400',
-};
-
-const BAR_COLOR = (pct) => pct <= 30 ? 'bg-red-500' : pct <= 60 ? 'bg-yellow-500' : 'bg-green-500';
-
-const USAGE_PER_DAY = { PPE: 20, Medicines: 15, Equipment: 5, Emergency: 10 };
-const daysRemaining = (item) => Math.floor(item.quantity / (USAGE_PER_DAY[item.category] || 10));
-
-function SummaryCard({ label, count, total, color, icon }) {
-  const colors = {
-    blue:   'bg-blue-50   text-blue-700   dark:bg-blue-900/20   dark:text-blue-300',
-    green:  'bg-green-50  text-green-700  dark:bg-green-900/20  dark:text-green-300',
-    yellow: 'bg-yellow-50 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-300',
-    red:    'bg-red-50    text-red-700    dark:bg-red-900/20    dark:text-red-300',
-  };
-  const pct = total ? Math.round((count / total) * 100) : 0;
-  return (
-    <div className={`rounded-2xl p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg ${colors[color]}`}>
-      <p className="text-xs font-medium uppercase tracking-wide opacity-60">{icon} {label}</p>
-      <p className="text-3xl font-black mt-1">{count}</p>
-      <p className="text-xs mt-1 opacity-70">{pct}% of total</p>
-    </div>
-  );
-}
-
-function StockBar({ item }) {
-  const sp   = stockPct(item);
-  const days = daysRemaining(item);
-  return (
-    <div className="min-w-[140px]">
-      <div className="flex items-center gap-2">
-        <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
-          <div
-            className={`${BAR_COLOR(sp)} h-2 rounded-full transition-all duration-500`}
-            style={{ width: `${sp}%` }}
-          />
-        </div>
-        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400 w-8 text-right">{sp}%</span>
-      </div>
-      <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{item.quantity} / {item.minThreshold} units</p>
-      <p className="text-xs text-gray-400 dark:text-gray-500">Stock lasts ~{days} day{days !== 1 ? 's' : ''}</p>
-    </div>
-  );
-}
-
-function CategoryCard({ cat, items }) {
-  const total    = items.length;
-  const critical = items.filter(i => i.status === 'Critical').length;
-  const avgStock = avgOf(items.map(i => stockPct(i)));
-  const borderCls = avgStock < 50 ? 'border-red-400' : avgStock < 70 ? 'border-yellow-400' : 'border-gray-100 dark:border-gray-800';
-  const bgTint    = avgStock < 50 ? 'bg-red-50 dark:bg-red-900/10' : 'bg-white dark:bg-gray-900';
-
-  return (
-    <div className={`${bgTint} rounded-2xl border-2 ${borderCls} shadow-sm p-5 transition-all duration-300 hover:scale-[1.02] hover:shadow-xl`}>
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-bold text-gray-800 dark:text-gray-100">{cat}</h3>
-        <span className="text-xs font-semibold text-gray-400">{total} items</span>
-      </div>
-      <div className="grid grid-cols-2 gap-2 text-center mb-4">
-        {[['Critical', critical, 'text-red-600'], ['Avg Stock', `${avgStock}%`, 'text-indigo-600']].map(([l, v, c]) => (
-          <div key={l}>
-            <p className={`text-xl font-black ${c} dark:opacity-90`}>{v}</p>
-            <p className="text-xs text-gray-400">{l}</p>
-          </div>
-        ))}
-      </div>
-      <div>
-        <div className="flex justify-between text-xs text-gray-500 mb-1">
-          <span>Avg Stock Level</span><span className="font-semibold">{avgStock}%</span>
-        </div>
-        <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2">
-          <div className={`${BAR_COLOR(avgStock)} h-2 rounded-full transition-all duration-500`} style={{ width: `${avgStock}%` }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
+// Status tiers are mutually exclusive (an item is exactly one of ok/low/critical),
+// not overlapping — "critical" is not double-counted inside "low". The two
+// numbers are meant to be read together as a breakdown of "needs restocking",
+// which is why the UI always shows them side by side with that sum spelled out.
+const computeStatus = (quantity, threshold) => (quantity <= threshold * 0.5 ? 'critical' : quantity <= threshold ? 'low' : 'ok');
 
 export default function Inventory() {
-  const { sharedItems, setSharedItems } = useHospital();
-  const [items, setItems] = [sharedItems, setSharedItems];
-  const [lastUpdated,  setLastUpdated] = useState({ time: fmt(new Date()), ts: Date.now(), prevTotal: INITIAL_ITEMS.reduce((s, i) => s + i.quantity, 0) });
-  const [now,          setNow]         = useState(Date.now());
-  const [filter,       setFilter]      = useState('All');
-  const [highlightedId, setHighlightedId] = useState(null);
-  const [pingId,         setPingId]        = useState(null);
-  const rowRefs = useRef({});
+  const { sharedItems, loading, error, refetch, hospitalId } = useHospital();
+  const { user } = useAuth();
+  const { addToast } = useNotifications();
+  const [showAdd, setShowAdd] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [restockOnly, setRestockOnly] = useState(false);
+  const canManage = user.role === 'admin' || user.role === 'staff';
 
-  // ── Event bus: react to OPD patient additions ─────────────────────────────
-  useEffect(() => {
-    return onEvent('PATIENT_ADDED', ({ severity }) => {
-      setItems(prev => {
-        // Medicines: -5 units; Emergency severity: also -2 Emergency supplies
-        let updated = prev;
-        const medIdx = prev.findIndex(i => i.category === 'Medicines' && i.quantity > 0);
-        if (medIdx !== -1) {
-          updated = updated.map((item, i) =>
-            i === medIdx ? { ...item, quantity: Math.max(item.quantity - 5, 0) } : item
-          );
-        }
-        if (severity === 'Critical' || severity === 'High') {
-          const emgIdx = updated.findIndex(i => i.category === 'Emergency' && i.quantity > 0);
-          if (emgIdx !== -1) {
-            updated = updated.map((item, i) =>
-              i === emgIdx ? { ...item, quantity: Math.max(item.quantity - 2, 0) } : item
-            );
-          }
-        }
-        return withStatus(updated);
-      });
+  const enriched = useMemo(() => sharedItems.map((i) => ({ ...i, status: computeStatus(i.quantity, i.minThreshold) })), [sharedItems]);
+  const lowCount = enriched.filter((i) => i.status === 'low').length;
+  const criticalCount = enriched.filter((i) => i.status === 'critical').length;
+  const needsRestocking = enriched.filter((i) => i.status !== 'ok');
+
+  const visible = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return enriched.filter((i) => {
+      if (restockOnly && i.status === 'ok') return false;
+      if (categoryFilter !== 'all' && i.category !== categoryFilter) return false;
+      if (term && !i.item.toLowerCase().includes(term)) return false;
+      return true;
     });
-  }, []);
+  }, [enriched, search, categoryFilter, restockOnly]);
 
-  // "just now" ticker — only runs while within 10s window
-  useEffect(() => {
-    if (now - lastUpdated.ts >= 10000) return;
-    const id = setInterval(() => setNow(Date.now()), 5000);
-    return () => clearInterval(id);
-  }, [lastUpdated.ts]);
-
-  const stamp = (prev) => {
-    const prevTotal = prev.reduce((s, i) => s + i.quantity, 0);
-    setLastUpdated({ time: fmt(new Date()), ts: Date.now(), prevTotal });
-    setNow(Date.now());
-  };
-
-  // ── Derived stats ──────────────────────────────────────────────────────────
-  const total    = items.length;
-  const okCount  = useMemo(() => items.filter(i => i.status === 'OK').length,       [items]);
-  const lowCount = useMemo(() => items.filter(i => i.status === 'Low').length,      [items]);
-  const critCount= useMemo(() => items.filter(i => i.status === 'Critical').length, [items]);
-
-  const totalQty = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
-  const qtyDelta = totalQty - lastUpdated.prevTotal;
-
-  // Restock urgently: item with highest shortage %
-  const urgentItem = useMemo(() => {
-    const nonOk = items.filter(i => i.status !== 'OK');
-    return nonOk.length
-      ? nonOk.reduce((a, b) => shortagePct(a) >= shortagePct(b) ? a : b)
-      : null;
-  }, [items]);
-
-  // Critical alert categories (deduplicated)
-  const criticalCategories = useMemo(() =>
-    [...new Set(items.filter(i => i.status === 'Critical').map(i => i.category))],
-  [items]);
-
-  // Filtered + sorted: Critical → Low → OK, then highest shortage % descending
-  const filtered = useMemo(() => {
-    const base = filter === 'All'
-      ? items
-      : items.filter(i => i.category === filter || i.status === filter);
-    return base.slice().sort((a, b) => {
-      const sd = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-      return sd !== 0 ? sd : shortagePct(b) - shortagePct(a);
-    });
-  }, [items, filter]);
-
-  const hasCritOrLow = critCount + lowCount > 0;
-
-  // ── Actions ────────────────────────────────────────────────────────────────
-  const useSupplies = () => {
-    setItems(prev => {
-      stamp(prev);
-      const idx = Math.floor(Math.random() * prev.length);
-      const delta = Math.floor(Math.random() * 16) + 5;
-      const updated = withStatus(prev.map((item, i) =>
-        i === idx ? { ...item, quantity: clamp(item.quantity - delta, 0, Infinity) } : item
-      ));
-      // emit if the affected item just became critical
-      const affected = updated[idx];
-      if (affected.status === 'Critical' && prev[idx].status !== 'Critical') {
-        emitEvent('LOW_STOCK_ALERT', { itemName: affected.name, category: affected.category });
+  const adjust = async (item, delta) => {
+    const next = Math.max(0, (item.quantity || 0) + delta);
+    setBusyId(item.id);
+    try {
+      await inventoryService.update(item.id, { quantity: next });
+      const status = computeStatus(next, item.minThreshold);
+      if (status === 'critical' && item.status !== 'critical') {
+        addToast({ type: 'critical', title: `${item.item} critically low`, message: `${next} ${item.unit} remaining` });
+        emitEvent('LOW_STOCK_ALERT', { itemName: item.item, category: item.category });
+      } else if (delta > 0 && item.status !== 'ok' && status === 'ok') {
+        addToast({ type: 'success', title: `${item.item} restocked`, message: `${next} ${item.unit} — back above threshold` });
+        emitEvent('ITEM_RESTOCKED', { item: item.item });
+      } else {
+        addToast({ type: 'info', title: `${item.item} → ${next} ${item.unit}` });
       }
-      return updated;
-    });
+    } catch (err) {
+      addToast({ type: 'critical', title: 'Update failed', message: err.response?.data?.message || err.message });
+    } finally {
+      setBusyId(null);
+    }
   };
 
-  const restock = () => {
-    setItems(prev => {
-      const critical = prev.filter(i => i.quantity < i.minRequired);
-      if (!critical.length) return prev;
-      const worst = [...critical].sort(
-        (a, b) => (a.quantity / a.minThreshold) - (b.quantity / b.minThreshold)
-      )[0];
-      const updated = withStatus(prev.map(item =>
-        item.id === worst.id
-          ? { ...item, quantity: Math.min(item.quantity + 20, item.minThreshold * 2) }
-          : item
-      ));
-      stamp(prev);
-      emitEvent('ITEM_RESTOCKED', { item: worst.name, category: worst.category });
-      return updated;
-    });
-  };
-
-  const restockItem = (id) => {
-    setItems(prev => {
-      const target = prev.find(i => i.id === id);
-      const updated = withStatus(prev.map(item =>
-        item.id === id
-          ? { ...item, quantity: Math.min(item.quantity + 20, item.minThreshold * 2) }
-          : item
-      ));
-      stamp(prev);
-      if (target) emitEvent('ITEM_RESTOCKED', { item: target.name, category: target.category });
-      return updated;
-    });
-  };
-
-  const scrollToUrgent = () => {
-    if (!urgentItem) return;
-    setFilter('All');
-    setHighlightedId(urgentItem.id);
-    setPingId(urgentItem.id);
-    setTimeout(() => {
-      rowRefs.current[urgentItem.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 50);
-    setTimeout(() => { setHighlightedId(null); setPingId(null); }, 2000);
-  };
-
-  // alerts: critical items first, then low — capped at 2 visible
-  const allAlerts = useMemo(() => [
-    ...items.filter(i => i.status === 'Critical'),
-    ...items.filter(i => i.status === 'Low'),
-  ], [items]);
-  const visibleAlerts = allAlerts.slice(0, 2);
-  const hiddenAlertCount = allAlerts.length - visibleAlerts.length;
-
-  // mins since last restock
-  const minsSinceRestock = Math.floor((Date.now() - lastUpdated.ts) / 60000);
+  if (loading) {
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => <CardSkeleton key={i} />)}
+      </div>
+    );
+  }
+  if (error) return <ErrorState description={error} onRetry={refetch} />;
 
   return (
-    <div className="space-y-6">
-
-      {/* Header */}
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Inventory Management</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            {total} items
-            {critCount > 0 && <span className="text-red-500 font-semibold"> · {critCount} critical</span>}
-            {lowCount > 0 && <span className="text-yellow-500 font-semibold"> · {lowCount} low</span>}
-            <span className="text-gray-400"> · Last restock {minsSinceRestock === 0 ? 'just now' : `${minsSinceRestock} min${minsSinceRestock !== 1 ? 's' : ''} ago`}</span>
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <span className="text-xs text-gray-400 dark:text-gray-500">
-            Last updated: {lastUpdated.time}
-            {now - lastUpdated.ts < 10000 && <span className="ml-1 text-green-500 font-medium">· just now</span>}
-            {qtyDelta !== 0 && (
-              <span className={`ml-2 font-semibold ${qtyDelta < 0 ? 'text-red-500' : 'text-green-500'}`}>
-                {qtyDelta < 0 ? `${Math.abs(qtyDelta)} units consumed` : `+${qtyDelta} units restocked`}
-              </span>
-            )}
-          </span>
-          <div className="flex flex-wrap gap-2">
-            <Tooltip text="Automatically restocks the most critically low item">
-              <button onClick={restock} disabled={!hasCritOrLow} className="px-4 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-all duration-200 shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed">
-                🔄 Restock
-              </button>
-            </Tooltip>
-            <Tooltip text="Simulates consumption of a random inventory item">
-              <button onClick={useSupplies} className="px-4 py-1.5 border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 text-xs font-semibold rounded-lg transition-all duration-200">
-                📦 Use Supplies
-              </button>
-            </Tooltip>
-          </div>
-          <p className="text-xs text-gray-400 dark:text-gray-500">Tip: Restock targets the most critical item automatically</p>
-        </div>
+    <div className="space-y-6 animate-fade-in">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <StatCard label="Total items tracked" value={enriched.length} icon={Package} tone="brand" />
+        <StatCard label="Low (above 50% of threshold)" value={lowCount} icon={AlertTriangle} tone="warning" />
+        <StatCard label="Critical (at/below 50% of threshold)" value={criticalCount} icon={AlertTriangle} tone="critical" />
       </div>
 
-      {/* Alerts — max 2 visible, differentiated by severity */}
-      {visibleAlerts.length > 0 && (
-        <div className="space-y-2">
-          {visibleAlerts.map(item => {
-            const isCrit = item.status === 'Critical';
-            return (
-              <div
-                key={item.id}
-                className={`flex items-center gap-3 rounded-xl px-4 py-3 border-l-4 transition-all duration-200 hover:shadow-md ${
-                  isCrit
-                    ? 'bg-red-50 dark:bg-red-900/20 border-l-red-500 border border-red-200 dark:border-red-700 animate-[pulse_2s_ease-in-out_infinite]'
-                    : 'bg-yellow-50 dark:bg-yellow-900/20 border-l-yellow-400 border border-yellow-200 dark:border-yellow-700'
-                }`}
-              >
-                <span className={isCrit ? 'text-red-500' : 'text-yellow-500'}>⚠️</span>
-                <p className={`text-sm font-semibold flex-1 ${
-                  isCrit ? 'text-red-700 dark:text-red-400' : 'text-yellow-700 dark:text-yellow-400'
-                }`}>
-                  {isCrit ? 'Critical' : 'Low stock'}: {item.name}
-                  <span className="ml-1 font-normal opacity-70">({item.category} · {shortagePct(item)}% shortage)</span>
-                </p>
-              </div>
-            );
-          })}
-          {hiddenAlertCount > 0 && (
-            <p className="text-xs text-gray-400 dark:text-gray-500 pl-1">+{hiddenAlertCount} more alert{hiddenAlertCount !== 1 ? 's' : ''}</p>
-          )}
-        </div>
+      {needsRestocking.length > 0 ? (
+        <Card className="border-status-warning/30 bg-status-warningBg/30">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle size={16} className="text-status-warning shrink-0" />
+            <p className="text-sm font-semibold text-surface-800">
+              {needsRestocking.length} item{needsRestocking.length > 1 ? 's' : ''} need restocking
+              <span className="font-normal text-surface-500"> ({criticalCount} critical, {lowCount} low)</span>
+            </p>
+          </div>
+          <p className="text-xs text-surface-600">{needsRestocking.map((a) => a.item).join(', ')}</p>
+        </Card>
+      ) : (
+        <Card className="border-status-success/30 bg-status-successBg/20">
+          <div className="flex items-center gap-2">
+            <Info size={16} className="text-status-success shrink-0" />
+            <p className="text-sm text-surface-800">All tracked items are above their restocking threshold.</p>
+          </div>
+        </Card>
       )}
 
-      {/* Restock recommendation — clickable with CTA */}
-      {urgentItem && (
-        <div
-          role="button"
-          onClick={scrollToUrgent}
-          title="Click to highlight this item in the table"
-          className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700 rounded-xl px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30 hover:shadow-md transition-all duration-200"
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
+          <input
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search item name…" aria-label="Search inventory items"
+            className="w-full pl-8 pr-3 py-2 rounded-lg border border-surface-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+          />
+        </div>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} aria-label="Filter by category" className="px-3 py-2 rounded-lg border border-surface-200 bg-white text-sm text-surface-700 capitalize focus:outline-none focus:ring-2 focus:ring-brand-500">
+          <option value="all">All categories</option>
+          {INVENTORY_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <button
+          onClick={() => setRestockOnly((r) => !r)}
+          className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${restockOnly ? 'bg-brand-600 border-brand-600 text-white' : 'bg-white border-surface-200 text-surface-600 hover:bg-surface-50'}`}
         >
-          <span className="text-indigo-500">💡</span>
-          <p className="text-sm text-indigo-700 dark:text-indigo-300 flex-1">
-            Restock urgently: <span className="font-bold">{urgentItem.name}</span>
-            <span className="ml-1 opacity-70">({urgentItem.category} · {shortagePct(urgentItem)}% shortage)</span>
-            <span className="text-xs text-indigo-400 ml-2">Auto-detected</span>
-          </p>
-          <button
-            onClick={e => { e.stopPropagation(); restockItem(urgentItem.id); }}
-            className="shrink-0 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-all duration-200"
-          >
-            Restock Now →
-          </button>
-        </div>
+          Needs restocking only
+        </button>
+        <div className="flex-1" />
+        {canManage && <Button size="sm" icon={Plus} onClick={() => setShowAdd(true)}>Add item</Button>}
+      </div>
+
+      {visible.length === 0 ? (
+        <Card><EmptyState icon={Package} title="No matching items" description="Try clearing filters, or add a new inventory item." /></Card>
+      ) : (
+        <Card padded={false}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-surface-100 text-left text-xs text-surface-500 uppercase tracking-wide">
+                  <th scope="col" className="px-5 py-3 font-medium">Item</th>
+                  <th scope="col" className="px-5 py-3 font-medium">Category</th>
+                  <th scope="col" className="px-5 py-3 font-medium">Stock level (relative to threshold)</th>
+                  <th scope="col" className="px-5 py-3 font-medium">Status</th>
+                  {canManage && <th scope="col" className="px-5 py-3 font-medium text-right">Adjust</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-50">
+                {visible.map((item) => {
+                  const meta = INVENTORY_STATUS_META[item.status];
+                  const pct = Math.min(100, Math.round((item.quantity / (item.minThreshold * 2)) * 100));
+                  return (
+                    <tr key={item.id} className="hover:bg-surface-50/60 transition-colors">
+                      <td className="px-5 py-3 font-medium text-surface-800">{item.item}</td>
+                      <td className="px-5 py-3 text-surface-500 capitalize">{item.category}</td>
+                      <td className="px-5 py-3 w-56">
+                        <div className="flex items-center gap-2">
+                          <ProgressBar value={pct} tone={meta.tone} className="flex-1" />
+                          <span className="text-xs text-surface-500 tabular-nums w-24 shrink-0">{item.quantity} / {item.minThreshold} min</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3"><Badge tone={meta.tone}>{meta.label}</Badge></td>
+                      {canManage && (
+                        <td className="px-5 py-3">
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              onClick={() => adjust(item, -Math.max(1, Math.round(item.minThreshold * 0.1)))}
+                              disabled={busyId === item.id || item.quantity === 0}
+                              aria-label={`Decrease ${item.item} stock`}
+                              className="w-7 h-7 rounded-lg border border-surface-200 flex items-center justify-center text-surface-500 hover:bg-surface-100 disabled:opacity-40"
+                            >
+                              <Minus size={13} />
+                            </button>
+                            <button
+                              onClick={() => adjust(item, Math.max(1, Math.round(item.minThreshold * 0.25)))}
+                              disabled={busyId === item.id}
+                              aria-label={`Increase ${item.item} stock`}
+                              className="w-7 h-7 rounded-lg border border-surface-200 flex items-center justify-center text-surface-500 hover:bg-surface-100 disabled:opacity-40"
+                            >
+                              <Plus size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <SummaryCard label="Total Items"   count={total}     total={total} color="blue"   icon="📦" />
-        <SummaryCard label="OK"            count={okCount}   total={total} color="green"  icon="✅" />
-        <SummaryCard label="Low Stock"     count={lowCount}  total={total} color="yellow" icon="🟡" />
-        <SummaryCard label="Critical"      count={critCount} total={total} color="red"    icon="🔴" />
-      </div>
+      {showAdd && (
+        <AddItemModal hospitalId={hospitalId} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); refetch(); }} />
+      )}
+    </div>
+  );
+}
 
-      {/* Category breakdown */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {CATEGORIES.map(cat => (
-          <CategoryCard key={cat} cat={cat} items={items.filter(i => i.category === cat)} />
-        ))}
-      </div>
+function AddItemModal({ hospitalId, onClose, onCreated }) {
+  const { addToast } = useNotifications();
+  const [form, setForm] = useState({ item: '', category: INVENTORY_CATEGORIES[0], quantity: 100, unit: 'units', minThreshold: 30 });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
 
-      {/* Inventory table */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between flex-wrap gap-3">
-          <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">📦 Item List</h2>
-          <div className="flex flex-wrap gap-2">
-            {['All', ...CATEGORIES, 'OK', 'Low', 'Critical'].map(f => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-2.5 py-0.5 rounded-full text-xs font-semibold transition-colors ${
-                  filter === f
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
-                }`}
-              >{f}</button>
-            ))}
+  const submit = async (e) => {
+    e.preventDefault();
+    const name = form.item.trim();
+    const unit = form.unit.trim();
+    const quantity = Number(form.quantity);
+    const minThreshold = Number(form.minThreshold);
+
+    if (!name) return setErr('Item name is required.');
+    if (!unit) return setErr('Unit is required (e.g. boxes, cylinders, vials).');
+    if (Number.isNaN(quantity) || quantity < 0) return setErr('Quantity must be 0 or more.');
+    if (Number.isNaN(minThreshold) || minThreshold <= 0) return setErr('Minimum threshold must be greater than 0.');
+
+    setSaving(true);
+    setErr('');
+    try {
+      await inventoryService.create({ ...form, item: name, unit, hospitalId, quantity, minThreshold });
+      addToast({ type: 'success', title: `${name} added to inventory` });
+      onCreated();
+    } catch (e2) {
+      setErr(e2.response?.data?.message || 'Failed to add item');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Add inventory item" onClose={onClose}>
+      {err && <p className="text-xs text-status-critical mb-3">{err}</p>}
+      <form onSubmit={submit} className="space-y-3">
+        <div>
+          <label htmlFor="inv-name" className="sr-only">Item name</label>
+          <input id="inv-name" value={form.item} onChange={(e) => setForm((f) => ({ ...f, item: e.target.value }))} placeholder="e.g. N95 Masks" className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm" />
+        </div>
+        <div>
+          <label htmlFor="inv-category" className="sr-only">Category</label>
+          <select id="inv-category" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm capitalize">
+            {INVENTORY_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="inv-qty" className="block text-xs text-surface-500 mb-1">Quantity</label>
+            <input id="inv-qty" type="number" min="0" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm" />
+          </div>
+          <div>
+            <label htmlFor="inv-threshold" className="block text-xs text-surface-500 mb-1">Min threshold</label>
+            <input id="inv-threshold" type="number" min="1" value={form.minThreshold} onChange={(e) => setForm((f) => ({ ...f, minThreshold: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm" />
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 dark:bg-gray-800 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                <th className="px-4 py-3 text-left">Item Name</th>
-                <th className="px-4 py-3 text-left">Category</th>
-                <th className="px-4 py-3 text-left">Stock Level</th>
-                <th className="px-4 py-3 text-left">Min Required</th>
-                <th className="px-4 py-3 text-left">Shortage</th>
-                <th className="px-4 py-3 text-left">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center">
-                    <p className="text-3xl mb-2">📦</p>
-                    <p className="text-sm font-medium text-gray-400 dark:text-gray-500">No items match this filter</p>
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Try selecting a different category or status</p>
-                  </td>
-                </tr>
-              )}
-              {filtered.map(item => {
-                const isCritical  = item.status === 'Critical';
-                const isFlashing  = highlightedId === item.id;
-                const sp          = shortagePct(item);
-                const rowCls      = isCritical
-                  ? 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-400'
-                  : 'hover:bg-gray-50 dark:hover:bg-gray-800/50';
-                return (
-                  <tr
-                    key={item.id}
-                    ref={el => rowRefs.current[item.id] = el}
-                    className={`transition-all duration-300 ease-in-out ${rowCls} ${isCritical ? 'animate-[pulse_2s_ease-in-out_infinite]' : ''} ${isFlashing ? 'ring-2 ring-inset ring-indigo-400' : ''} ${pingId === item.id ? 'animate-[ping_1s_ease-out]' : ''}`}
-                  >
-                    <td className="px-4 py-3 font-semibold text-gray-800 dark:text-gray-200">{item.name}</td>
-                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{item.category}</td>
-                    <td className="px-4 py-3"><StockBar item={item} /></td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{item.minThreshold}</td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs font-semibold ${sp > 50 ? 'text-red-600 dark:text-red-400' : sp > 0 ? 'text-yellow-600 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}`}>
-                        {sp > 0 ? `${sp}%` : '—'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[item.status]}`}>
-                        {item.status}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div>
+          <label htmlFor="inv-unit" className="sr-only">Unit</label>
+          <input id="inv-unit" value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} placeholder="unit (e.g. boxes, cylinders)" className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm" />
         </div>
-      </div>
-
-    </div>
+        <div className="flex gap-2 pt-1">
+          <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>Cancel</Button>
+          <Button type="submit" className="flex-1" loading={saving}>Add</Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

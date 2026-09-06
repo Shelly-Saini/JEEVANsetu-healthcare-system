@@ -1,20 +1,26 @@
 import { useNavigate } from 'react-router-dom';
+import { ShieldAlert } from 'lucide-react';
 import { useAuth } from '../utils/AuthContext.jsx';
 
 export default function Unauthorized() {
   const { homeFor, user } = useAuth();
   const navigate = useNavigate();
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-surface-50 flex items-center justify-center p-4">
       <div className="text-center max-w-md">
-        <p className="text-6xl mb-4">🚫</p>
-        <h1 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Access Denied</h1>
-        <p className="text-gray-500 dark:text-gray-400 mb-6">You do not have permission to view this page.</p>
+        <div className="w-14 h-14 rounded-full bg-status-criticalBg text-status-critical flex items-center justify-center mx-auto mb-4">
+          <ShieldAlert size={26} />
+        </div>
+        <h1 className="text-2xl font-bold text-surface-900 mb-2">Access denied</h1>
+        <p className="text-surface-500 mb-6">
+          Your account role doesn't have permission to view this page. Every route is enforced
+          both here and on the server, so this isn't just a hidden link.
+        </p>
         <button
           onClick={() => navigate(user ? homeFor(user.role) : '/login')}
-          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg transition-all duration-200 text-sm"
+          className="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded-xl transition-colors text-sm"
         >
-          Go to Dashboard
+          Go to my dashboard
         </button>
       </div>
     </div>

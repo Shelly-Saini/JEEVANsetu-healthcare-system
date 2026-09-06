@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { Activity } from 'lucide-react';
 import { useAuth } from '../utils/AuthContext.jsx';
 
 // SVG icons — all use className="w-5 h-5 shrink-0"
@@ -42,46 +43,52 @@ const Icons = {
       <path d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 0 0 1.946-.806 3.42 3.42 0 0 1 4.438 0 3.42 3.42 0 0 0 1.946.806 3.42 3.42 0 0 1 3.138 3.138 3.42 3.42 0 0 0 .806 1.946 3.42 3.42 0 0 1 0 4.438 3.42 3.42 0 0 0-.806 1.946 3.42 3.42 0 0 1-3.138 3.138 3.42 3.42 0 0 0-1.946.806 3.42 3.42 0 0 1-4.438 0 3.42 3.42 0 0 0-1.946-.806 3.42 3.42 0 0 1-3.138-3.138 3.42 3.42 0 0 0-.806-1.946 3.42 3.42 0 0 1 0-4.438 3.42 3.42 0 0 0 .806-1.946 3.42 3.42 0 0 1 3.138-3.138z" />
     </svg>
   ),
+  Audit: (
+    <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+      <path d="M9 12h6M9 16h6M9 8h6M5 3h9l5 5v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+    </svg>
+  ),
 };
 
 const ALL_NAV = [
-  { to: '/dashboard', icon: Icons.Dashboard, label: 'Dashboard', roles: ['admin'] },
-  { to: '/city',      icon: Icons.City,      label: 'City View',  roles: ['admin'] },
-  { to: '/opd',       icon: Icons.OPD,       label: 'OPD Queue',  roles: ['admin', 'doctor'] },
-  { to: '/beds',      icon: Icons.Beds,      label: 'Beds',       roles: ['admin', 'staff'] },
-  { to: '/doctors',   icon: Icons.Doctors,   label: 'Doctors',    roles: ['admin', 'doctor'] },
-  { to: '/inventory', icon: Icons.Inventory, label: 'Inventory',  roles: ['admin', 'staff'] },
+  { to: '/dashboard', icon: Icons.Dashboard, label: 'Dashboard', roles: ['admin', 'doctor', 'staff'] },
+  { to: '/city', icon: Icons.City, label: 'City Ops', roles: ['admin', 'doctor', 'staff', 'city_admin'] },
+  { to: '/opd', icon: Icons.OPD, label: 'OPD Queue', roles: ['admin', 'doctor'] },
+  { to: '/beds', icon: Icons.Beds, label: 'Beds', roles: ['admin', 'staff'] },
+  { to: '/doctors', icon: Icons.Doctors, label: 'Doctors', roles: ['admin', 'doctor'] },
+  { to: '/inventory', icon: Icons.Inventory, label: 'Inventory', roles: ['admin', 'staff'] },
   { to: '/admissions', icon: Icons.Admissions, label: 'Admissions', roles: ['admin', 'doctor'] },
+  { to: '/audit', icon: Icons.Audit, label: 'Activity Log', roles: ['admin', 'doctor', 'staff', 'city_admin'] },
 ];
 
 export default function Sidebar({ collapsed }) {
   const { user } = useAuth();
-  const nav = ALL_NAV.filter(n => !user || n.roles.includes(user.role));
+  const nav = ALL_NAV.filter((n) => !user || n.roles.includes(user.role));
 
   return (
-    <aside className={`${collapsed ? 'w-16' : 'w-60'} transition-all duration-300 bg-gray-900 dark:bg-gray-950 flex flex-col min-h-screen`}>
-
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-4 py-5 border-b border-gray-700">
-        <span className="text-2xl shrink-0">🩺</span>
+    <aside className={`${collapsed ? 'w-16' : 'w-60'} transition-all duration-300 bg-surface-950 flex flex-col min-h-screen`}>
+      <div className="flex items-center gap-3 px-4 py-5 border-b border-white/10">
+        <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center shrink-0">
+          <Activity className="text-white" size={17} strokeWidth={2.2} />
+        </div>
         {!collapsed && (
           <span className="text-white font-bold text-lg tracking-wide">
-            JEEVAN<span className="text-indigo-400">setu</span>
+            JEEVAN<span className="text-brand-400 font-light">setu</span>
           </span>
         )}
       </div>
 
-      {/* Nav links */}
       <nav className="flex-1 py-4 space-y-1 px-2">
         {nav.map(({ to, icon, label }) => (
           <NavLink
             key={to}
             to={to}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200
-               ${isActive
-                 ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-900/40 scale-[1.02]'
-                 : 'text-gray-400 hover:bg-gray-800 hover:text-white hover:scale-[1.01]'}`
+              `flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 ${
+                isActive
+                  ? 'bg-brand-600 text-white shadow-lg shadow-brand-900/30'
+                  : 'text-surface-400 hover:bg-white/5 hover:text-white'
+              }`
             }
           >
             <div className="w-6 flex justify-center shrink-0">{icon}</div>
@@ -90,10 +97,9 @@ export default function Sidebar({ collapsed }) {
         ))}
       </nav>
 
-      {/* Footer */}
       {!collapsed && (
-        <div className="px-4 py-3 border-t border-gray-700 text-xs text-gray-500">
-          v1.0.0 · JEEVANsetu
+        <div className="px-4 py-3 border-t border-white/10 text-xs text-surface-500">
+          v2.0.0 · JEEVANsetu
         </div>
       )}
     </aside>

@@ -1,313 +1,275 @@
-import { useState, useEffect, useRef } from 'react';
-import { useHospital } from '../utils/hospitalStore.jsx';
-import Tooltip from '../components/Tooltip.jsx';
+import { useState, useEffect, useCallback } from 'react';
+import { BrainCircuit, CheckCircle2, AlertTriangle, ArrowRightCircle, History, Sparkles, ClipboardCheck } from 'lucide-react';
+import { useAuth } from '../utils/AuthContext.jsx';
+import { useNotifications } from '../utils/notificationStore.jsx';
+import { emitEvent } from '../utils/eventBus.js';
+import { admissionService } from '../services/api.js';
+import { DOCTOR_DEPARTMENTS, BED_TYPES, OPD_SEVERITIES, ADMISSION_DECISION_META, ADMISSION_STATUS_META } from '../constants/enums.js';
+import { Card, CardHeader } from '../components/ui/Card.jsx';
+import { Button } from '../components/ui/Button.jsx';
+import { EmptyState, ErrorState } from '../components/ui/States.jsx';
+import Badge from '../components/ui/Badge.jsx';
 
-// ─── Decision engine ──────────────────────────────────────────────────────────
-
-function computeMetrics(beds, doctors, items) {
-  const total    = beds.length || 1;
-  const occupied = beds.filter(b => b.status === 'Occupied').length;
-  const available = beds.filter(b => b.status === 'Available').length;
-  const bedPct   = Math.round((occupied / total) * 100);
-
-  const overloaded = doctors.filter(d => d.status === 'Overloaded').length;
-  const doctorPct  = Math.round((overloaded / (doctors.length || 1)) * 100);
-
-  const criticalItems = items.filter(i => i.status === 'Critical').length;
-  const lowItems      = items.filter(i => i.status === 'Low').length;
-  const invRisk       = Math.min(100, Math.round(((criticalItems * 2 + lowItems) / (items.length || 1)) * 100));
-
-  const opdLoad = Math.min(100, Math.round(doctors.reduce((s, d) => s + d.workload, 0) / (doctors.length || 1)));
-
-  const stress = Math.round(opdLoad * 0.4 + bedPct * 0.4 + doctorPct * 0.2);
-
-  return { bedPct, available, doctorPct, opdLoad, invRisk, stress };
-}
-
-function getAdmissionDecision(metrics) {
-  const { bedPct, doctorPct, invRisk, stress } = metrics;
-
-  const factors = [
-    {
-      label: 'Bed availability',
-      ok: bedPct < 85, critical: bedPct >= 95,
-      text: bedPct < 85 ? 'Beds sufficient' : bedPct >= 95 ? 'No beds available' : 'Beds running low',
-    },
-    {
-      label: 'Doctor capacity',
-      ok: doctorPct < 40, critical: doctorPct >= 70,
-      text: doctorPct < 40 ? 'Doctors available' : doctorPct >= 70 ? 'Doctors critically loaded' : 'Doctor load high',
-    },
-    {
-      label: 'Inventory readiness',
-      ok: invRisk < 30, critical: invRisk >= 60,
-      text: invRisk < 30 ? 'Inventory adequate' : invRisk >= 60 ? 'Inventory critical' : 'Some items low',
-    },
-    {
-      label: 'Overall stress',
-      ok: stress < 50, critical: stress >= 80,
-      text: stress < 50 ? 'Hospital load normal' : stress >= 80 ? 'Hospital critically stressed' : 'Moderate hospital load',
-    },
-  ];
-
-  const hasCritical = factors.some(f => f.critical);
-  const okCount     = factors.filter(f => f.ok).length;
-
-  let action, color, icon;
-  if (hasCritical || stress >= 80) {
-    action = 'Refer Patient';   color = 'red';    icon = '❌';
-  } else if (okCount >= 3) {
-    action = 'Admit';           color = 'green';  icon = '✔';
-  } else {
-    action = 'Delay / Monitor'; color = 'yellow'; icon = '⚠';
-  }
-
-  return { action, color, icon, factors };
-}
-
-// ─── Animated number ──────────────────────────────────────────────────────────
-
-function AnimatedNumber({ value, className }) {
-  const [display, setDisplay] = useState(value);
-  const prev = useRef(value);
-
-  useEffect(() => {
-    if (prev.current === value) return;
-    const start = prev.current;
-    const diff  = value - start;
-    const steps = 20;
-    let i = 0;
-    const id = setInterval(() => {
-      i++;
-      setDisplay(Math.round(start + (diff * i) / steps));
-      if (i >= steps) { clearInterval(id); prev.current = value; }
-    }, 16);
-    return () => clearInterval(id);
-  }, [value]);
-
-  return <span className={className}>{display}</span>;
-}
-
-// ─── Metric bar ───────────────────────────────────────────────────────────────
-
-const BAR_COLOR = (pct) =>
-  pct >= 80 ? 'bg-red-400/80' : pct >= 50 ? 'bg-yellow-400/80' : 'bg-emerald-500/80';
-
-function MetricBar({ label, pct, note }) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex justify-between items-center text-sm">
-        <span className="font-medium text-gray-700 dark:text-gray-300">{label}</span>
-        <span className="font-mono font-semibold text-gray-500 dark:text-gray-400">
-          {pct}%{note ? <span className="ml-1 text-xs text-gray-400">{note}</span> : null}
-        </span>
-      </div>
-      <div className="h-2 w-full bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-700 ease-out ${BAR_COLOR(pct)}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-// ─── Factor row ───────────────────────────────────────────────────────────────
-
-function FactorRow({ factor }) {
-  const icon  = factor.critical ? '❌' : factor.ok ? '✔' : '⚠';
-  const color = factor.critical
-    ? 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
-    : factor.ok
-    ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800'
-    : 'text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800';
-
-  return (
-    <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border text-sm font-medium ${color}`}>
-      <span className="text-base shrink-0">{icon}</span>
-      <span>{factor.text}</span>
-      <span className="ml-auto text-xs opacity-60">{factor.label}</span>
-    </div>
-  );
-}
-
-// ─── Palettes ─────────────────────────────────────────────────────────────────
-
-const STRESS_PALETTE = {
-  green:  { ring: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-900/20', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', label: 'Stable'   },
-  yellow: { ring: 'text-yellow-400',  bg: 'bg-yellow-50 dark:bg-yellow-900/20',   badge: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',   label: 'Moderate' },
-  red:    { ring: 'text-red-500',     bg: 'bg-red-50 dark:bg-red-900/20',         badge: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',               label: 'Critical' },
-};
-
-const stressColor = (s) => s < 50 ? 'green' : s < 80 ? 'yellow' : 'red';
-
-const ACTION_STYLE = {
-  green:  'from-emerald-500 to-teal-500 shadow-emerald-200 dark:shadow-emerald-900/40',
-  yellow: 'from-yellow-400 to-orange-400 shadow-yellow-200 dark:shadow-yellow-900/40',
-  red:    'from-red-500 to-rose-500 shadow-red-200 dark:shadow-red-900/40',
-};
-
-// ─── Main component ───────────────────────────────────────────────────────────
-
+/**
+ * Admissions — the Smart Admission decision workflow. Every number here (bed
+ * availability, doctor availability, stress score) and the recommendation
+ * itself come from the backend's admissionEngine — a deterministic,
+ * explainable rules engine over real, current hospital data, not an AI
+ * model. The engine only ever RECOMMENDS; a human with admit/doctor
+ * permissions must explicitly confirm before anything is recorded or any
+ * bed/doctor state changes.
+ */
 export default function Admissions() {
-  const { sharedBeds, sharedDoctors, sharedItems } = useHospital();
+  const { user } = useAuth();
+  const { addToast } = useNotifications();
 
-  // snapshot: null until Evaluate is clicked — freezes metrics+decision at that moment
-  const [snapshot, setSnapshot] = useState(null);
-  const [forced,   setForced]   = useState(null); // 'admit' | 'refer' | null
+  const [form, setForm] = useState({ patientName: '', age: '', department: DOCTOR_DEPARTMENTS[0], bedType: BED_TYPES[0], severity: 'medium' });
+  const [formError, setFormError] = useState('');
+  const [evaluation, setEvaluation] = useState(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const [deciding, setDeciding] = useState(false);
+  const [justConfirmed, setJustConfirmed] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyError, setHistoryError] = useState(null);
 
-  // liveMetrics always reflects current store — drives bars + ring
-  const liveMetrics  = computeMetrics(sharedBeds, sharedDoctors, sharedItems);
-  const liveDecision = getAdmissionDecision(liveMetrics);
+  const canDecide = user.role === 'admin' || user.role === 'doctor';
 
-  // ring/badge use snapshot stress after evaluate so they match the recommendation
-  const evaluated = snapshot !== null;
-  const ringMetrics = evaluated ? snapshot.metrics  : liveMetrics;
-  const decision    = evaluated ? snapshot.decision : liveDecision;
+  const loadHistory = useCallback(async () => {
+    try {
+      setHistoryError(null);
+      const { data } = await admissionService.history(user.hospitalId);
+      setHistory(data.data || []);
+    } catch (err) {
+      setHistoryError(err.response?.data?.message || err.message);
+    }
+  }, [user.hospitalId]);
 
-  const sc      = stressColor(ringMetrics.stress);
-  const palette = STRESS_PALETTE[sc];
+  useEffect(() => { loadHistory(); }, [loadHistory]);
 
-  const displayColor  = forced === 'admit' ? 'green' : forced === 'refer' ? 'red' : decision.color;
-  const displayAction = forced === 'admit' ? 'Admit' : forced === 'refer' ? 'Refer Patient' : decision.action;
-  const displayIcon   = forced === 'admit' ? '✔'     : forced === 'refer' ? '❌'            : decision.icon;
-
-  const handleEvaluate = () => {
-    const m = computeMetrics(sharedBeds, sharedDoctors, sharedItems);
-    const d = getAdmissionDecision(m);
-    console.log('Decision:', d);
-    setForced(null);
-    setSnapshot({ metrics: m, decision: d });
+  const validateForm = () => {
+    const name = form.patientName.trim();
+    if (!name) return 'Patient name is required.';
+    if (name.length < 2) return 'Patient name looks too short.';
+    if (form.age !== '' && (Number(form.age) < 0 || Number(form.age) > 120)) return 'Age must be between 0 and 120.';
+    if (!form.department) return 'Department is required.';
+    if (!form.bedType) return 'Bed type is required.';
+    if (!OPD_SEVERITIES.includes(form.severity)) return 'Severity is required.';
+    return '';
   };
 
-  const handleForce = (type) => {
-    const m = computeMetrics(sharedBeds, sharedDoctors, sharedItems);
-    const d = getAdmissionDecision(m);
-    setForced(type);
-    setSnapshot({ metrics: m, decision: d });
+  const runEvaluation = async () => {
+    const validationError = validateForm();
+    if (validationError) { setFormError(validationError); return; }
+    setFormError('');
+    setEvaluating(true);
+    setEvaluation(null);
+    setJustConfirmed(null);
+    try {
+      const { data } = await admissionService.evaluate({
+        hospitalId: user.hospitalId, department: form.department, bedType: form.bedType, severity: form.severity,
+      });
+      setEvaluation(data.data);
+    } catch (err) {
+      addToast({ type: 'critical', title: 'Evaluation failed', message: err.response?.data?.message || err.message });
+    } finally {
+      setEvaluating(false);
+    }
+  };
+
+  const confirmDecision = async () => {
+    const validationError = validateForm();
+    if (validationError) { setFormError(validationError); return; }
+    setDeciding(true);
+    try {
+      const { data } = await admissionService.decide({
+        hospitalId: user.hospitalId, patientName: form.patientName.trim(), age: form.age ? Number(form.age) : undefined,
+        department: form.department, bedType: form.bedType, severity: form.severity,
+      });
+      const decision = data.data.result.decision;
+      addToast({
+        type: decision === 'admit' ? 'success' : decision === 'refer' ? 'critical' : 'warning',
+        title: `Confirmed: ${ADMISSION_DECISION_META[decision].label}`,
+      });
+      emitEvent('ADMISSION_DECIDED', { patientName: form.patientName, decision });
+      setJustConfirmed({ patientName: form.patientName.trim(), decision });
+      setForm((f) => ({ ...f, patientName: '', age: '' }));
+      setEvaluation(null);
+      loadHistory();
+    } catch (err) {
+      addToast({ type: 'critical', title: 'Could not record decision', message: err.response?.data?.message || err.message });
+    } finally {
+      setDeciding(false);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-indigo-50/30 to-purple-50/20 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950 p-6 space-y-6">
-
-      {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">🧠 Smart Admissions</h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">AI-assisted admission decision engine — real-time hospital readiness</p>
-      </div>
-
-      {/* Main grid */}
+    <div className="space-y-6 animate-fade-in">
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-
-        {/* Decision panel */}
-        <div className={`lg:col-span-2 rounded-3xl border p-8 flex flex-col items-center text-center gap-6 shadow-xl transition-all duration-500 ${palette.bg} border-gray-200 dark:border-gray-700`}>
-          <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">Smart Admission Decision</p>
-
-          {/* Stress ring */}
-          <Tooltip text="Calculated using OPD load (40%), bed occupancy (40%), and doctor pressure (20%)">
-            <div className="relative flex items-center justify-center w-36 h-36 cursor-help">
-              <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
-                <circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" strokeWidth="8" className="text-gray-200 dark:text-gray-700" />
-                <circle
-                  cx="50" cy="50" r="42" fill="none" strokeWidth="8"
-                  strokeLinecap="round"
-                  stroke="currentColor"
-                  className={`${palette.ring} transition-all duration-700`}
-                  strokeDasharray={`${2 * Math.PI * 42}`}
-                  strokeDashoffset={`${2 * Math.PI * 42 * (1 - ringMetrics.stress / 100)}`}
+        {/* ── Left: patient + evaluation ─────────────────────────────────── */}
+        <div className="lg:col-span-3 space-y-6">
+          <Card>
+            <CardHeader
+              title="Evaluate a new patient"
+              subtitle="Runs a deterministic, rules-based engine against this hospital's current beds, doctors, and stress level — not an AI model"
+              icon={BrainCircuit}
+            />
+            {formError && <p className="text-xs text-status-critical mb-3">{formError}</p>}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="col-span-2">
+                <label htmlFor="adm-name" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Patient name</label>
+                <input
+                  id="adm-name"
+                  value={form.patientName} onChange={(e) => { setForm((f) => ({ ...f, patientName: e.target.value })); setFormError(''); }}
+                  placeholder="Required before evaluating"
+                  className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm"
                 />
-              </svg>
-              <div className="flex flex-col items-center">
-                <AnimatedNumber value={ringMetrics.stress} className={`text-4xl font-black ${palette.ring}`} />
-                <span className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">/ 100</span>
+              </div>
+              <div>
+                <label htmlFor="adm-age" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Age</label>
+                <input id="adm-age" type="number" min="0" max="120" value={form.age} onChange={(e) => { setForm((f) => ({ ...f, age: e.target.value })); setFormError(''); }} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm" />
+              </div>
+              <div>
+                <label htmlFor="adm-severity" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Severity</label>
+                <select id="adm-severity" value={form.severity} onChange={(e) => setForm((f) => ({ ...f, severity: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm capitalize">
+                  {OPD_SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="adm-dept" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Department</label>
+                <select id="adm-dept" value={form.department} onChange={(e) => setForm((f) => ({ ...f, department: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm">
+                  {DOCTOR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="adm-bedtype" className="block text-xs font-semibold text-surface-600 uppercase tracking-wide mb-1.5">Bed type needed</label>
+                <select id="adm-bedtype" value={form.bedType} onChange={(e) => setForm((f) => ({ ...f, bedType: e.target.value }))} className="w-full px-3 py-2 rounded-lg border border-surface-200 bg-surface-50 text-sm">
+                  {BED_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
               </div>
             </div>
-          </Tooltip>
+            <Button icon={Sparkles} loading={evaluating} onClick={runEvaluation} className="w-full">
+              Evaluate against live hospital data
+            </Button>
+          </Card>
 
-          {/* Status badge */}
-          <span className={`px-4 py-1.5 rounded-full text-sm font-bold tracking-wide ${palette.badge}`}>
-            {palette.label}
-          </span>
-
-          {/* Recommendation box */}
-          {evaluated ? (
-            <div className={`w-full rounded-2xl bg-gradient-to-r ${ACTION_STYLE[displayColor]} p-px shadow-lg transition-all duration-500`}>
-              <div className="rounded-2xl bg-white dark:bg-gray-900 px-6 py-5">
-                <p className="text-xs text-gray-400 uppercase tracking-widest mb-2">Recommendation</p>
-                <p className={`text-4xl font-black bg-gradient-to-r ${ACTION_STYLE[displayColor]} bg-clip-text text-transparent leading-tight`}>
-                  {displayIcon} {displayAction}
+          {justConfirmed && (
+            <Card className="border-status-success/30 bg-status-successBg/20">
+              <div className="flex items-center gap-2">
+                <ClipboardCheck size={16} className="text-status-success shrink-0" />
+                <p className="text-sm text-surface-800">
+                  <span className="font-semibold">Confirmed decision recorded</span> for {justConfirmed.patientName}: {ADMISSION_DECISION_META[justConfirmed.decision].label}.
+                  This is now a permanent record in the audit log — not just a recommendation.
                 </p>
               </div>
-            </div>
-          ) : (
-            <div className="w-full rounded-2xl border-2 border-dashed border-gray-200 dark:border-gray-700 px-6 py-5 text-gray-400 dark:text-gray-600 text-sm leading-relaxed">
-              Run evaluation to get an AI-based admission recommendation
-            </div>
+            </Card>
           )}
 
-          {/* Buttons */}
-          <div className="w-full flex flex-col gap-3 pt-2">
-            <button
-              onClick={handleEvaluate}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-bold text-sm tracking-wide shadow-lg shadow-indigo-200 dark:shadow-indigo-900/40 transition-all duration-200 hover:scale-[1.02] active:scale-95"
-            >
-              🔍 Evaluate Admission
-            </button>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => handleForce('admit')}
-                className="py-2.5 rounded-xl border-2 border-emerald-500 text-emerald-700 dark:text-emerald-300 font-semibold text-sm hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all duration-200 hover:scale-[1.02] active:scale-95"
-              >
-                ✔ Force Admit
-              </button>
-              <button
-                onClick={() => handleForce('refer')}
-                className="py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold text-sm shadow-md shadow-red-200 dark:shadow-red-900/40 transition-all duration-200 hover:scale-[1.02] active:scale-95"
-              >
-                ❌ Refer Patient
-              </button>
-            </div>
-          </div>
+          {evaluation && (
+            <EvaluationResult
+              evaluation={evaluation}
+              canDecide={canDecide}
+              deciding={deciding}
+              patientNamed={!!form.patientName.trim()}
+              onConfirm={confirmDecision}
+            />
+          )}
         </div>
 
-        {/* Right column */}
-        <div className="lg:col-span-3 flex flex-col gap-6">
+        {/* ── Right: recent decisions ────────────────────────────────────── */}
+        <div className="lg:col-span-2">
+          <Card>
+            <CardHeader title="Recent admission decisions" icon={History} subtitle="Confirmed & recorded outcomes — not recommendations" />
+            {historyError ? (
+              <ErrorState description={historyError} onRetry={loadHistory} />
+            ) : history.length === 0 ? (
+              <EmptyState icon={History} title="No decisions recorded yet" description="Evaluate and confirm a patient to see it appear here." />
+            ) : (
+              <ul className="space-y-2 max-h-[520px] overflow-y-auto scrollbar-thin pr-1">
+                {history.map((h) => {
+                  const meta = ADMISSION_STATUS_META[h.status] || ADMISSION_STATUS_META.pending;
+                  return (
+                    <li key={h.id} className="border border-surface-100 rounded-xl p-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-sm font-semibold text-surface-800">{h.patientName}</p>
+                        <Badge tone={meta.tone}>{meta.label}</Badge>
+                      </div>
+                      <p className="text-xs text-surface-500">{h.department} · {h.bedType} bed</p>
+                      <p className="text-xs text-surface-400 mt-1">{new Date(h.createdAt).toLocaleString()}</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-          {/* Live metric bars — always reflect current store state */}
-          <div className="rounded-3xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 shadow-sm p-6 space-y-5">
-            <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-1">Hospital Readiness Metrics</p>
-            <MetricBar label="Bed Occupancy"   pct={liveMetrics.bedPct}    note={`${liveMetrics.available} free`} />
-            <MetricBar label="OPD Load"         pct={liveMetrics.opdLoad}   />
-            <MetricBar label="Doctor Overload"  pct={liveMetrics.doctorPct} />
-            <MetricBar label="Inventory Risk"   pct={liveMetrics.invRisk}   />
-          </div>
+function EvaluationResult({ evaluation, canDecide, deciding, patientNamed, onConfirm }) {
+  const { decision, reasons, metrics, referral } = evaluation;
+  const meta = ADMISSION_DECISION_META[decision];
+  const DecisionIcon = decision === 'admit' ? CheckCircle2 : decision === 'refer' ? ArrowRightCircle : AlertTriangle;
 
-          {/* Decision factors — reflect snapshot after evaluate, live before */}
-          <div className="rounded-3xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 shadow-sm p-6 space-y-3">
-            <div className="flex flex-col gap-1 mb-3">
-              <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">Decision Factors</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Decision based on:&nbsp;
-                {decision.factors.map((f, i) => (
-                  <span key={f.label}>
-                    <span className={f.critical ? 'text-red-500 font-semibold' : f.ok ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-yellow-600 dark:text-yellow-400 font-semibold'}>
-                      {f.label.split(' ')[0]} {f.critical ? '✕' : f.ok ? '✓' : '⚠'}
-                    </span>
-                    {i < decision.factors.length - 1 && <span className="text-gray-300 dark:text-gray-600"> | </span>}
-                  </span>
-                ))}
-              </p>
-            </div>
-            {decision.factors.map(f => <FactorRow key={f.label} factor={f} />)}
-          </div>
-
+  return (
+    <Card className="border-l-4" style={{ borderLeftColor: 'currentColor' }}>
+      <div className={`flex items-center gap-3 mb-4 ${decision === 'admit' ? 'text-status-success' : decision === 'refer' ? 'text-status-critical' : 'text-status-warning'}`}>
+        <div className="w-11 h-11 rounded-xl bg-current/10 flex items-center justify-center">
+          <DecisionIcon size={22} />
+        </div>
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide opacity-80">System Recommendation — not yet confirmed</p>
+          <p className="text-xl font-bold">{meta.label}</p>
         </div>
       </div>
 
-      {/* Footer */}
-      <p className="text-xs text-gray-400 dark:text-gray-600 text-center pb-2">
-        Decisions are advisory only. Clinical staff must confirm all admissions. · Stress formula: OPD (40%) + Beds (40%) + Doctors (20%)
-      </p>
+      <div className="mb-4">
+        <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-2">Why the engine recommends this</p>
+        <ul className="space-y-1.5">
+          {reasons.map((r, i) => (
+            <li key={i} className="text-sm text-surface-700 flex gap-2">
+              <span className="text-surface-300">—</span>{r}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <Metric label="Hospital stress" value={`${metrics.hospitalStressScore}/100`} sub={metrics.hospitalStressLabel} />
+        <Metric label={`${metrics.bedType} beds`} value={`${metrics.bedAvailable}/${metrics.bedTotal}`} sub={`${metrics.bedOccupancyPct}% occupied`} />
+        <Metric label={`${metrics.department} doctors`} value={`${metrics.doctorsAvailableCount}/${metrics.doctorsInDeptCount}`} sub="available now" />
+      </div>
+
+      {referral && (
+        <div className="bg-status-infoBg border border-status-info/20 rounded-xl p-3 mb-4">
+          <p className="text-xs font-semibold text-status-info uppercase tracking-wide mb-1">Suggested alternative hospital</p>
+          <p className="text-sm text-surface-800">{referral.name} — stress score {referral.stressScore}/100, {referral.availableBeds} beds available</p>
+        </div>
+      )}
+      {decision === 'refer' && !referral && (
+        <div className="bg-status-criticalBg border border-status-critical/20 rounded-xl p-3 mb-4">
+          <p className="text-sm text-surface-800">No alternative hospital in this city currently has an available bed of this type either — this case needs manual coordination.</p>
+        </div>
+      )}
+
+      {canDecide ? (
+        <Button className="w-full" loading={deciding} disabled={!patientNamed} onClick={onConfirm}>
+          {patientNamed ? `Confirm & record this decision` : 'Enter patient name to confirm'}
+        </Button>
+      ) : (
+        <p className="text-xs text-surface-400 text-center">Your role can evaluate but not confirm admission decisions — that requires Admin or Doctor.</p>
+      )}
+    </Card>
+  );
+}
+
+function Metric({ label, value, sub }) {
+  return (
+    <div className="bg-surface-50 rounded-lg p-3 text-center">
+      <p className="text-[10px] font-medium text-surface-500 uppercase tracking-wide">{label}</p>
+      <p className="text-lg font-bold text-surface-900 mt-0.5">{value}</p>
+      <p className="text-[11px] text-surface-500">{sub}</p>
     </div>
   );
 }

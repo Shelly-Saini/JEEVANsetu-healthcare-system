@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- intentional context+provider+hook pattern */
 import { createContext, useContext, useState, useCallback, useRef } from 'react';
 
 const NotificationContext = createContext(null);
@@ -33,10 +34,19 @@ export function NotificationProvider({ children }) {
   const clearAll      = useCallback(() => setNotifications([]), []);
   const dismissToast  = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), []);
 
+  // addToast — immediate action feedback (e.g. "Bed updated") that shows as a
+  // toast but doesn't clutter the persistent notification list, unlike
+  // addNotification which is for real system/domain events.
+  const addToast = useCallback(({ type = 'info', title, message }) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setToasts(prev => [...prev, { id, type, title, message, ts: Date.now() }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
+  }, []);
+
   const unreadCount = notifications.filter(n => !n.read).length;
 
   return (
-    <NotificationContext.Provider value={{ notifications, toasts, unreadCount, addNotification, dismiss, markRead, markAllRead, clearAll, dismissToast }}>
+    <NotificationContext.Provider value={{ notifications, toasts, unreadCount, addNotification, addToast, dismiss, markRead, markAllRead, clearAll, dismissToast }}>
       {children}
     </NotificationContext.Provider>
   );

@@ -5,6 +5,8 @@ const Doctor     = require('../models/Doctor');
 const OPDQueue   = require('../models/OPDQueue');
 const Inventory  = require('../models/Inventory');
 const Admission  = require('../models/Admission');
+const MetricSnapshot = require('../models/MetricSnapshot');
+const bcrypt     = require('bcryptjs');
 
 // ─── Deterministic helpers ────────────────────────────────────────────────────
 
@@ -28,9 +30,10 @@ const PROFILES = {
 
 // ─── Static master data ───────────────────────────────────────────────────────
 
-const SEED_PASSWORD_HASH =
-  process.env.SEED_PASSWORD_HASH ||
-  '$2a$10$replacethiswitharealhashdonotuseinproduction00000000000';
+// Plaintext demo password for every seeded account — hashed for real via the
+// User model's pre-save hook (see seedData()). Documented in README as the
+// shared demo login for reviewers; never used for anything but seed data.
+const SEED_DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || 'Demo@1234';
 
 const HOSPITALS_DEF = [
   // Delhi — 4 hospitals: one of each profile + one extra moderate
@@ -269,9 +272,9 @@ function makeOPD(hospital, profile) {
 // Admissions are relational — they reference real doctor IDs and bed IDs
 // generated earlier in the same seed run.
 const ADMISSION_REASONS = {
-  admit:  ['Immediate care required', 'Post-surgery monitoring', 'Severe infection', 'Cardiac event', 'Trauma'],
-  delay:  ['High occupancy — bed unavailable', 'Awaiting specialist', 'Pending lab results'],
-  refer:  ['Requires advanced ICU', 'Specialist not available', 'Capacity exceeded'],
+  admit:   ['Immediate care required', 'Post-surgery monitoring', 'Severe infection', 'Cardiac event', 'Trauma'],
+  monitor: ['High occupancy — bed unavailable', 'Awaiting specialist', 'Pending lab results'],
+  refer:   ['Requires advanced ICU', 'Specialist not available', 'Capacity exceeded'],
 };
 
 function makeAdmissions(hospital, profile, hospDoctors, hospBeds) {
@@ -286,11 +289,13 @@ function makeAdmissions(hospital, profile, hospDoctors, hospBeds) {
     const roll = Math.random();
     let decision;
     if      (profile === 'high'     && roll < 0.35) decision = 'refer';
-    else if (profile === 'high'     && roll < 0.60) decision = 'delay';
-    else if (profile === 'moderate' && roll < 0.20) decision = 'delay';
+    else if (profile === 'high'     && roll < 0.60) decision = 'monitor';
+    else if (profile === 'moderate' && roll < 0.20) decision = 'monitor';
     else                                            decision = 'admit';
 
-    const status = decision === 'admit' ? pick(['admitted', 'discharged']) : 'pending';
+    const status = decision === 'admit' ? pick(['admitted', 'discharged'])
+      : decision === 'refer' ? 'referred'
+      : 'pending';
 
     rows.push({
       id:          `a${admId++}`,
@@ -305,6 +310,49 @@ function makeAdmissions(hospital, profile, hospDoctors, hospBeds) {
       reason:      pick(ADMISSION_REASONS[decision] || ADMISSION_REASONS.admit),
       admittedAt:  new Date(Date.now() - ri(1, 48) * 3_600_000).toISOString(),
       status,
+    });
+  }
+  return rows;
+}
+
+// ─── Historical snapshots (seeded once so trend charts aren't empty on first run) ──
+// Generates a plausible 24-hour history per hospital using the same profile
+// ranges as its live data, with a mild trend + noise. The live snapshot
+// scheduler (utils/snapshotJob.js) takes over with real computed values from
+// this point forward — this is purely a cold-start convenience for demos.
+function makeSnapshotHistory(hospital, profile) {
+  const rows = [];
+  const now = Date.now();
+  const HOURS = 24;
+
+  // Mild directional drift so "high" profiles trend worse and "low" trend
+  // better — gives the forecast utility something meaningful to project.
+  const drift = profile === 'high' ? 0.6 : profile === 'low' ? -0.3 : 0;
+
+  const baseOpd = { low: 30, moderate: 55, high: 80 }[profile];
+  const baseBed = { low: 40, moderate: 62, high: 85 }[profile];
+  const baseDoc = { low: 25, moderate: 48, high: 72 }[profile];
+
+  for (let h = HOURS - 1; h >= 0; h--) {
+    const noise = () => rf(-6, 6);
+    const trendOffset = drift * (HOURS - h);
+    const opdLoad = clamp(baseOpd + noise() + trendOffset * 0.5, 0, 100);
+    const bedOccupancy = clamp(baseBed + noise() + trendOffset * 0.6, 0, 100);
+    const doctorPressure = clamp(baseDoc + noise() + trendOffset * 0.3, 0, 100);
+    const stressScore = Math.round(opdLoad * 0.4 + bedOccupancy * 0.4 + doctorPressure * 0.2);
+    const totalBeds = hospital.totalBeds || 40;
+    const availableBeds = Math.max(0, Math.round(totalBeds * (1 - bedOccupancy / 100)));
+
+    rows.push({
+      hospitalId: hospital.id,
+      stressScore,
+      opdLoad: Math.round(opdLoad),
+      bedOccupancy: Math.round(bedOccupancy),
+      doctorPressure: Math.round(doctorPressure),
+      activeOpdPatients: Math.round((opdLoad / 100) * 50),
+      availableBeds,
+      totalBeds,
+      capturedAt: new Date(now - h * 3_600_000),
     });
   }
   return rows;
@@ -327,23 +375,28 @@ const seedData = async ({ force = false } = {}) => {
     // Reset counters on every call — prevents ID collisions in test environments
     bedId = 1; docId = 1; invId = 1; opdId = 1; admId = 1;
 
+    // insertMany() bypasses Mongoose's pre('save') hook, so the password is
+    // hashed once, here, before insertion — the hook still runs for anyone
+    // who registers through POST /auth/register.
+    const seedPasswordHash = await bcrypt.hash(SEED_DEMO_PASSWORD, 10);
+
     // ── Users ──────────────────────────────────────────────────────────────────
     const users = [
-      { id: 'u1',  name: 'City Admin — Delhi',     email: 'cityadmin@jeevansetu.in',  password: SEED_PASSWORD_HASH, role: 'city_admin', cityId: 'city1' },
-      { id: 'u2',  name: 'City Admin — Mumbai',    email: 'cityadmin.mum@jeevansetu.in', password: SEED_PASSWORD_HASH, role: 'city_admin', cityId: 'city2' },
-      { id: 'u3',  name: 'City Admin — Bangalore', email: 'cityadmin.blr@jeevansetu.in', password: SEED_PASSWORD_HASH, role: 'city_admin', cityId: 'city3' },
-      { id: 'u4',  name: 'Admin — Apollo',         email: 'admin@apollo.in',          password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h1' },
-      { id: 'u5',  name: 'Admin — AIIMS',          email: 'admin@aiims.in',           password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h2' },
-      { id: 'u6',  name: 'Admin — Fortis',         email: 'admin@fortis.in',          password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h3' },
-      { id: 'u7',  name: 'Admin — Max',            email: 'admin@max.in',             password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h4' },
-      { id: 'u8',  name: 'Admin — Lilavati',       email: 'admin@lilavati.in',        password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h5' },
-      { id: 'u9',  name: 'Admin — KEM',            email: 'admin@kem.in',             password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h6' },
-      { id: 'u10', name: 'Admin — Hinduja',        email: 'admin@hinduja.in',         password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h7' },
-      { id: 'u11', name: 'Admin — Manipal',        email: 'admin@manipal.in',         password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h8' },
-      { id: 'u12', name: 'Admin — Narayana',       email: 'admin@narayana.in',        password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h9' },
-      { id: 'u13', name: 'Admin — Sakra',          email: 'admin@sakra.in',           password: SEED_PASSWORD_HASH, role: 'doctor',     hospitalId: 'h10' },
-      { id: 'u14', name: 'OPD Desk — Apollo',      email: 'opd@apollo.in',            password: SEED_PASSWORD_HASH, role: 'staff',      hospitalId: 'h1' },
-      { id: 'u15', name: 'OPD Desk — AIIMS',       email: 'opd@aiims.in',             password: SEED_PASSWORD_HASH, role: 'staff',      hospitalId: 'h2' },
+      { id: 'u1',  name: 'City Admin — Delhi',     email: 'cityadmin@jeevansetu.in',  password: seedPasswordHash, role: 'city_admin', cityId: 'city1' },
+      { id: 'u2',  name: 'City Admin — Mumbai',    email: 'cityadmin.mum@jeevansetu.in', password: seedPasswordHash, role: 'city_admin', cityId: 'city2' },
+      { id: 'u3',  name: 'City Admin — Bangalore', email: 'cityadmin.blr@jeevansetu.in', password: seedPasswordHash, role: 'city_admin', cityId: 'city3' },
+      { id: 'u4',  name: 'Admin — Apollo',         email: 'admin@apollo.in',          password: seedPasswordHash, role: 'admin',      hospitalId: 'h1' },
+      { id: 'u5',  name: 'Admin — AIIMS',          email: 'admin@aiims.in',           password: seedPasswordHash, role: 'admin',      hospitalId: 'h2' },
+      { id: 'u6',  name: 'Admin — Fortis',         email: 'admin@fortis.in',          password: seedPasswordHash, role: 'admin',      hospitalId: 'h3' },
+      { id: 'u7',  name: 'Admin — Max',            email: 'admin@max.in',             password: seedPasswordHash, role: 'admin',      hospitalId: 'h4' },
+      { id: 'u8',  name: 'Admin — Lilavati',       email: 'admin@lilavati.in',        password: seedPasswordHash, role: 'admin',      hospitalId: 'h5' },
+      { id: 'u9',  name: 'Admin — KEM',            email: 'admin@kem.in',             password: seedPasswordHash, role: 'admin',      hospitalId: 'h6' },
+      { id: 'u10', name: 'Dr. Coordinator — Hinduja', email: 'doctor@hinduja.in',     password: seedPasswordHash, role: 'doctor',     hospitalId: 'h7' },
+      { id: 'u11', name: 'Dr. Coordinator — Manipal', email: 'doctor@manipal.in',     password: seedPasswordHash, role: 'doctor',     hospitalId: 'h8' },
+      { id: 'u12', name: 'Dr. Coordinator — Narayana', email: 'doctor@narayana.in',   password: seedPasswordHash, role: 'doctor',     hospitalId: 'h9' },
+      { id: 'u13', name: 'Dr. Coordinator — Sakra', email: 'doctor@sakra.in',         password: seedPasswordHash, role: 'doctor',     hospitalId: 'h10' },
+      { id: 'u14', name: 'OPD Desk — Apollo',      email: 'opd@apollo.in',            password: seedPasswordHash, role: 'staff',      hospitalId: 'h1' },
+      { id: 'u15', name: 'OPD Desk — AIIMS',       email: 'opd@aiims.in',             password: seedPasswordHash, role: 'staff',      hospitalId: 'h2' },
     ];
 
     // ── Hospitals ──────────────────────────────────────────────────────────────
@@ -372,6 +425,7 @@ const seedData = async ({ force = false } = {}) => {
     const allInventory  = [];
     const allOPD        = [];
     const allAdmissions = [];
+    const allSnapshots  = [];
 
     HOSPITALS_DEF.forEach(hDef => {
       const profile = hDef.profile;
@@ -385,6 +439,8 @@ const seedData = async ({ force = false } = {}) => {
       // Patch totalBeds via O(1) Map lookup
       const hosp = hospitalMap.get(hDef.id);
       if (hosp) hosp.totalBeds = beds.reduce((s, b) => s + b.total, 0);
+
+      allSnapshots.push(...makeSnapshotHistory(hosp, profile));
 
       allBeds.push(...beds);
       allDoctors.push(...doctors);
@@ -401,8 +457,10 @@ const seedData = async ({ force = false } = {}) => {
     await Inventory.insertMany(allInventory);
     await OPDQueue.insertMany(allOPD);
     await Admission.insertMany(allAdmissions);
+    await MetricSnapshot.insertMany(allSnapshots);
 
-    console.log(`✅ Seeded: ${hospitals.length} hospitals | ${allBeds.length} bed rows | ${allDoctors.length} doctors | ${allInventory.length} inventory items | ${allOPD.length} OPD patients | ${allAdmissions.length} admissions`);
+    console.log(`✅ Seeded: ${hospitals.length} hospitals | ${allBeds.length} bed rows | ${allDoctors.length} doctors | ${allInventory.length} inventory items | ${allOPD.length} OPD patients | ${allAdmissions.length} admissions | ${allSnapshots.length} historical snapshots`);
+    console.log(`🔑 Demo login password for every seeded account: "${SEED_DEMO_PASSWORD}"`);
   } catch (err) {
     console.error('❌ Seed error:', err);
   }

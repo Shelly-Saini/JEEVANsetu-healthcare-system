@@ -1,14 +1,31 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  body { @apply bg-gray-50 text-gray-900 font-sans antialiased; }
+  body {
+    @apply bg-surface-50 text-surface-900 font-sans antialiased;
+  }
+
+  h1, h2, h3, h4 {
+    @apply tracking-tight text-surface-900;
+  }
+
+  /* Visible, brand-colored focus ring everywhere — accessibility, not just default browser outline */
+  :focus-visible {
+    outline: 2px solid theme('colors.brand.500');
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
 }
 
 @layer utilities {
   .scrollbar-hide::-webkit-scrollbar { display: none; }
   .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { @apply bg-surface-300 rounded-full; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 }
