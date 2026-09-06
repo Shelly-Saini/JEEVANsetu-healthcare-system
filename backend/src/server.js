@@ -48,7 +48,7 @@ const corsOptions = {
   origin: process.env.ALLOWED_ORIGIN || 'http://localhost:5173',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token'],exposedHeaders: ['x-csrf-token'],
 };
 
 app.options('*', cors(corsOptions));
