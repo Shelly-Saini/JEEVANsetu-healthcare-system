@@ -13,7 +13,7 @@ const router = express.Router();
 const REFRESH_COOKIE = 'refresh-token';
 const refreshCookieOpts = {
   httpOnly: true, // never readable by JS — mitigates XSS token theft
-  sameSite: 'Strict',
+  sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Strict',
   secure: process.env.NODE_ENV === 'production',
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: '/auth', // only sent on auth routes, not every request
