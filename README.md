@@ -1,7 +1,15 @@
 # JEEVANsetu — Healthcare Operations Intelligence Platform
 
+<p align="left">
+  <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/react-19-149ECA?logo=react&logoColor=white">
+  <img alt="MongoDB" src="https://img.shields.io/badge/mongodb-mongoose-47A248?logo=mongodb&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-20%20passing-2fa84f">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
+</p>
+
 JEEVANsetu is a multi-city hospital operations platform: OPD queue management,
-bed allocation, doctor workload, inventory, and a live "stress score" that
+bed allocation, doctor workload, inventory, and a live **stress score** that
 models how loaded a hospital is — plus an explainable Smart Admission
 decision engine, historical trend analytics, and real-time updates across
 every connected client.
@@ -10,6 +18,28 @@ This is a portfolio project. It is **not** a generic hospital CRUD app — the
 goal is to demonstrate full-stack engineering (React, Node/Express, MongoDB,
 real-time systems, RBAC, explainable decision logic) around a coherent
 healthcare-operations domain.
+
+> 📸 *Add screenshots or a short demo GIF here* — a dashboard view, the City
+> Ops map, and the Smart Admissions panel are the three most visually
+> compelling screens to lead with.
+
+---
+
+## Table of contents
+
+- [What's actually real vs. simulated](#whats-actually-real-vs-simulated)
+- [Architecture](#architecture)
+- [Features](#features)
+- [Roles & permissions](#roles--permissions)
+- [API overview](#api-overview)
+- [Getting started](#getting-started)
+- [Demo accounts](#demo-accounts)
+- [Testing](#testing)
+- [Deployment notes](#deployment-notes)
+- [Known limitations](#known-limitations-documented-honestly-not-hidden)
+- [Project history](#project-history)
+- [Tech stack](#tech-stack)
+- [License](#license)
 
 ---
 
@@ -29,23 +59,25 @@ Being upfront about this, because it matters for how you read the codebase:
 ## Architecture
 
 ```
-frontend/          React 19 + Vite + Tailwind — Vercel-deployable static build
-backend/            Node/Express + MongoDB (Mongoose) — REST API + Socket.IO
+frontend/           React 19 + Vite + Tailwind — Vercel-deployable static build
+backend/             Node/Express + MongoDB (Mongoose) — REST API + Socket.IO
   src/
-    constants/      Shared enum vocabulary (single source of truth for every status field)
+    constants/       Shared enum vocabulary (single source of truth for every status field)
     models/          Mongoose schemas
     routes/          Express route handlers (thin — delegate to utils/)
     middleware/      auth (JWT/RBAC), csrf, rateLimiter
     utils/           scoring, hospitalMetrics, admissionEngine, forecast, snapshotJob, audit, jwt
     realtime/        Socket.IO setup + room-scoped emit helpers
   tests/             Jest unit tests (pure logic — scoring, forecast, jwt)
+scripts/             Repo-level utilities (e.g. enum sync check, used by CI)
 ```
 
-**Why a shared `constants/enums.js`:** the original version of this project had
+**Why a shared `constants/enums.js`:** an earlier version of this project had
 each frontend page invent its own status strings (`'Occupied'` vs the
 backend's `'occupied'`), which silently broke several features. Both
 `backend/src/constants/enums.js` and `frontend/src/constants/enums.js` are now
-the single source of truth for every status vocabulary in the app.
+the single source of truth for every status vocabulary in the app, and
+`scripts/check-enum-sync.js` fails CI if they ever drift apart again.
 
 ---
 
@@ -53,36 +85,58 @@ the single source of truth for every status vocabulary in the app.
 
 ### Core operations
 - **Multi-hospital, multi-city model** — hospitals across Delhi, Mumbai, and Bangalore, each with independent beds, doctors, OPD queue, and inventory.
-- **OPD queue** — severity-based triage, auto-generated tokens, estimated wait times.
+- **OPD queue** — severity-based triage, auto-generated tokens, wait times recalculated live from actual queue position (not a flat constant).
 - **Bed management** — per-type (ICU/General/Emergency) capacity tracking with available/occupied/cleaning transitions.
-- **Doctor roster** — department, shift, workload, and availability status.
-- **Inventory tracking** — category-based stock with automatic low/critical thresholds.
+- **Doctor roster** — department, shift, workload, and availability status, with sortable/filterable views.
+- **Inventory tracking** — category-based stock with automatic low/critical thresholds and restock alerts.
 
 ### Intelligence layer
 - **Stress score** — an explainable weighted formula (40% OPD load, 40% bed occupancy, 20% doctor pressure), computed identically everywhere it's shown.
-- **Smart Admissions** — evaluates a patient against a hospital's *current* bed availability, doctor availability, and stress score, and recommends **admit / monitor / refer** with plain-English reasons. Computed and persisted server-side (never trusted from the client), and cross-references sibling hospitals in the same city for referral suggestions.
-- **Historical trend charts** — a `MetricSnapshot` is recorded automatically for every hospital on an interval; the dashboard charts stress score over the last 24 hours from real recorded data (seeded with 24h of synthetic history so charts aren't empty on first run).
-- **Forecasting** — a transparent linear-regression trend model (not a black-box ML model) projects bed-shortage and rising-stress ETAs from recent snapshots. Every number is explainable in one sentence.
-- **Audit log** — every mutation (bed transition, doctor status change, inventory adjustment, admission decision) is recorded with actor, role, and timestamp.
+- **Smart Admissions** — evaluates a patient against a hospital's *current* bed availability, doctor availability, and stress score, and recommends **admit / monitor / refer** with plain-English reasons. Computed and persisted server-side (never trusted from the client), cross-references sibling hospitals in the same city for referral suggestions, and clearly separates a live *recommendation* from a *confirmed* decision.
+- **Historical trend charts** — a `MetricSnapshot` is recorded automatically for every hospital on an interval; the dashboard charts stress score over the last 24 hours from real recorded data.
+- **Forecasting** — a transparent linear-regression trend model (not a black-box ML model) projects bed-shortage and rising-stress ETAs from recent snapshots, capped to a 14-day horizon so it never reports a false-precision figure like "shortage in 8,385 hours."
+- **Audit log** — every mutation (bed transition, doctor status change, inventory adjustment, admission decision) is recorded with actor, role, before/after values, and timestamp — filterable by resource type, actor role, and date.
 - **Real-time updates** — Socket.IO broadcasts changes to every connected client watching a hospital, so two people looking at the same dashboard see the same live state.
 
 ### Platform
-- **Real authentication** — JWT access tokens (short-lived, sent in-memory, never in localStorage) + httpOnly refresh-token cookie, with silent re-auth on page load.
-- **RBAC** — four roles (`admin`, `doctor`, `staff`, `city_admin`), enforced **server-side** via middleware (client-side route gating is UX only, not the security boundary).
-- **CSRF protection** — double-submit cookie pattern, applied globally so it actually works on a fresh session (see Known limitations below for what this fixed).
+- **Real authentication** — JWT access tokens (short-lived, kept in memory, never in localStorage) + httpOnly refresh-token cookie, with silent re-auth on page load.
+- **RBAC** — four roles, enforced **server-side** via middleware on every route, including reads (a user can't view another hospital's data just by changing an id in the request — client-side route gating is UX only, not the security boundary).
+- **CSRF protection** — double-submit cookie pattern, applied globally.
 
 ---
 
-## Demo accounts
+## Roles & permissions
 
-All seeded accounts share one password: **`Demo@1234`** (or whatever you set `SEED_DEMO_PASSWORD` to in `backend/.env`). The login page has one-click demo buttons for these:
+| | Dashboard | City Ops | OPD | Beds | Doctors | Inventory | Admissions | Activity Log |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Admin** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Doctor** | ✅ | ✅ | ✅ | — | ✅ | — | ✅ | ✅ |
+| **Ops Staff** | ✅ | ✅ | — | ✅ | — | ✅ | — | ✅ |
+| **City Admin** | — | ✅ (city-wide, read-only) | — | — | — | — | — | ✅ (city-wide) |
 
-| Role | Email | Scope |
-|---|---|---|
-| Hospital Admin | `admin@apollo.in` | Full control of Apollo (Delhi) |
-| Doctor | `doctor@hinduja.in` | OPD, doctors, admissions at Hinduja (Mumbai) |
-| Operations Staff | `opd@apollo.in` | Beds & inventory at Apollo |
-| City Admin | `cityadmin@jeevansetu.in` | Read-only, all hospitals in Delhi |
+Every cell above is enforced twice: the frontend hides nav items a role
+shouldn't see, and the backend independently rejects the request if it
+somehow arrives anyway (`requireRole`, `requireOwnHospital`, and
+`requireHospitalAccess` middleware — see `backend/src/middleware/auth.js`).
+
+---
+
+## API overview
+
+All routes are mounted without an `/api` prefix internally (Vercel's rewrite
+adds it in production; the local Vite dev proxy does the same).
+
+| Route | Purpose |
+|---|---|
+| `POST /auth/register`, `/login`, `/refresh`, `/logout`, `GET /auth/me` | JWT auth |
+| `GET /hospitals` | Public hospital directory (no auth — needed for signup) |
+| `GET /dashboard/:hospitalId`, `GET /dashboard/:hospitalId/history` | Hospital summary + stress-score trend |
+| `GET /city?city=|cityId=` | Multi-hospital city comparison + recommended hospital |
+| `GET/POST/PUT/DELETE /beds`, `/doctors`, `/inventory`, `/opd` | Resource CRUD, hospital-scoped |
+| `GET /admissions/evaluate`, `POST /admissions` | Smart Admission recommend / confirm |
+| `GET /forecast/:hospitalId` | Bed-shortage / stress-trend projection |
+| `GET /audit` | Filterable, paginated activity log |
+| `GET /health` | Liveness + DB connectivity check |
 
 ---
 
@@ -90,7 +144,7 @@ All seeded accounts share one password: **`Demo@1234`** (or whatever you set `SE
 
 ### Prerequisites
 - Node.js 20+
-- A MongoDB instance (local `mongod` or MongoDB Atlas)
+- A MongoDB instance (local `mongod`, or a free MongoDB Atlas cluster)
 
 ### 1. Backend
 ```bash
@@ -111,13 +165,34 @@ npm install
 npm run dev                 # starts on :5173, proxies /api and /socket.io to :5000
 ```
 
-Open `http://localhost:5173` and sign in with any demo account above.
+Open `http://localhost:5173` and sign in with any demo account below.
 
-### 3. Run tests
+---
+
+## Demo accounts
+
+All seeded accounts share one password: **`Demo@1234`** (or whatever you set
+`SEED_DEMO_PASSWORD` to in `backend/.env`). The login page has one-click demo
+buttons for these:
+
+| Role | Email | Scope |
+|---|---|---|
+| Hospital Admin | `admin@apollo.in` | Full control of Apollo (Delhi) |
+| Doctor | `doctor@hinduja.in` | OPD, doctors, admissions at Hinduja (Mumbai) |
+| Operations Staff | `opd@apollo.in` | Beds & inventory at Apollo |
+| City Admin | `cityadmin@jeevansetu.in` | Read-only, all hospitals in Delhi |
+
+---
+
+## Testing
+
 ```bash
-cd backend && npm test      # 18 Jest unit tests: scoring, forecast, jwt
+cd backend && npm test              # 20 Jest unit tests: scoring, forecast, jwt
 cd frontend && npm run lint && npm run build
+node scripts/check-enum-sync.js     # fails if frontend/backend status vocab drift apart
 ```
+
+All four checks above run in CI on every push/PR (`.github/workflows/ci.yml`).
 
 ---
 
@@ -134,17 +209,14 @@ cd frontend && npm run lint && npm run build
   it can't establish a socket connection.
 - Set real, random values for `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` in
   any non-local environment.
-- CI (`.github/workflows/ci.yml`) runs backend tests and a frontend
-  lint+build on every push/PR.
 
 ---
 
 ## Known limitations (documented honestly, not hidden)
 
-- **No DB integration tests.** The sandboxed environment this was built in
-  couldn't reach a MongoDB download server, so test coverage is limited to
-  pure-logic unit tests (scoring, forecast, JWT). Route-level integration
-  tests (Supertest + a real or in-memory Mongo) are a natural next step.
+- **No DB integration tests.** Test coverage is limited to pure-logic unit
+  tests (scoring, forecast, JWT). Route-level integration tests (Supertest +
+  a real or in-memory Mongo) are a natural next step.
 - **Rate limiting is in-memory**, so it resets per-instance and won't
   coordinate across multiple server processes. Fine for a single-instance
   deployment; would need a Redis-backed store (e.g. `rate-limit-redis`) to
@@ -152,71 +224,41 @@ cd frontend && npm run lint && npm run build
 - **City lookup by name/cityId** assumes exactly the three seeded cities.
   A real product would have a `/cities` collection and endpoint rather than
   a hardcoded list in the signup form.
-- **Socket.IO + serverless** — see Deployment notes above.
 - **Admission confirmations use a real MongoDB transaction when the
-  connection is a replica set** (every Atlas cluster, including the free M0
-  tier, qualifies). Against a standalone local `mongod` with no replica set,
-  transactions aren't supported at all — `utils/transaction.js` detects that
-  specific failure and falls back to sequential (non-atomic) writes so local
-  dev still works, just without the all-or-nothing guarantee. Documented in
-  code rather than silently swallowed.
+  connection is a replica set** (every MongoDB Atlas cluster, including the
+  free M0 tier, qualifies). Against a standalone local `mongod` with no
+  replica set, transactions aren't supported at all — `utils/transaction.js`
+  detects that specific failure and falls back to sequential (non-atomic)
+  writes so local dev still works, just without the all-or-nothing guarantee.
 
 ---
 
-## What changed from the original version
+## Project history
 
 This started as an earlier project with real strengths (a well-modeled
 stress-score algorithm, a genuinely nice CityMap/Leaflet integration, solid
 route-level validation) but also real problems: no real authentication
 despite `bcryptjs`/`jsonwebtoken` being installed, several pages silently
 running on local mock data instead of the real API, a status-vocabulary
-mismatch that made the Smart Admissions feature always return "Low risk", a
+mismatch that made the Smart Admissions feature always return "Low risk," a
 CSRF cookie that was never actually primed, and a generic indigo/purple UI.
 
-This version replaces the auth layer, fixes every data-wiring bug, adds
-real-time updates, historical analytics, explainable forecasting, an audit
-trail, and a redesigned visual identity built around a clinical teal/slate
-palette instead of a generic SaaS gradient.
+It went through two major passes to reach its current state:
 
-### Refinement pass — fixes from manual QA across all four roles
-
-A full manual pass (testing locally against MongoDB Atlas, exercising every
-role) surfaced a further round of real, root-caused fixes:
-
-- **City Admin's "City Ops" was completely broken.** `cityService.get()` only
-  ever sent its argument as `?city=`, so a city_admin's `cityId` (e.g.
-  `"city1"`) was compared against the `Hospital.city` *name* field and never
-  matched anything. Fixed by sending `city` and `cityId` as distinct,
-  named params.
-- **Forecast could show an operationally useless "~8385.7h" (349 days).**
-  The slope-magnitude threshold used to decide "is this trend real" was
-  looser than the one used to *label* the trend, so a barely-declining slope
-  could still produce a giant extrapolated ETA. Fixed with one consistent
-  threshold, a 14-day forecast horizon (beyond which it now says "not
-  projected to cause a shortage" instead of guessing), and human-readable
-  day/week formatting on the frontend. Covered by two new regression tests.
-- **A real cross-hospital data leak.** Every GET endpoint (beds, doctors,
-  inventory, OPD, dashboard, forecast, admissions) accepted any `hospitalId`
-  with no check that it belonged to the requesting user — only *writes* were
-  hospital-scoped. Added a `requireHospitalAccess` middleware enforced
-  server-side (admin/doctor/staff locked to their own hospital; city_admin
-  validated against their assigned city) so this can't be bypassed by
-  calling the API directly.
-- **OPD wait times were a flat per-severity constant**, never updated after
-  registration. Replaced with `utils/opdWaitTimes.js`, which recomputes every
-  waiting patient's estimate from their actual position in the priority
-  queue after every registration, status change, or cancellation.
-- Surge-mode's "Recommended Hospital" reason text went stale (kept quoting
-  the pre-surge score); the City hospital grid awkwardly orphaned a 4th card
-  on desktop; Inventory's "Low Stock: 0" next to "Critical: 4" read as
-  contradictory even though the tiers are correctly mutually exclusive;
-  Admissions didn't distinguish a live recommendation from an already-
-  confirmed decision. All fixed — see the CHANGELOG-equivalent detail in the
-  PR/commit history for the full list.
-- Added a shared, keyboard-accessible `Modal` (Escape to close, focus-on-open)
-  used by every "Add ___" form; added search/filter controls to OPD, Doctors,
-  and Inventory; added real before/after values to audit log entries plus
-  filtering and pagination on the Activity Log.
+1. **Rebuild** — replaced the auth layer, fixed every data-wiring bug, added
+   real-time updates, historical analytics, explainable forecasting, an audit
+   trail, and a redesigned visual identity built around a clinical teal/slate
+   palette.
+2. **Manual QA pass** — testing locally against MongoDB Atlas across all four
+   roles surfaced further root-caused fixes: a city-scoping bug that broke
+   City Admin entirely, an operationally-useless forecast figure caused by
+   inconsistent trend thresholds, a real cross-hospital **read** data leak
+   (any authenticated user could view another hospital's data by changing an
+   id in the request — closed with a `requireHospitalAccess` middleware),
+   flat non-updating OPD wait times replaced with real queue-position-driven
+   calculation, and a round of UX/accessibility polish (a shared keyboard-
+   accessible modal, search/filter controls, clearer recommendation-vs-
+   confirmed language in Smart Admissions).
 
 ---
 
@@ -224,3 +266,9 @@ role) surfaced a further round of real, root-caused fixes:
 
 **Frontend:** React 19, Vite, Tailwind CSS, React Router 7, Recharts, Leaflet/react-leaflet, lucide-react, Socket.IO client, Axios
 **Backend:** Node.js, Express, MongoDB/Mongoose, Socket.IO, JWT (jsonwebtoken), bcryptjs, Zod, Jest/Supertest
+
+---
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE). *(Add a LICENSE file to the repo root if one isn't there yet; MIT is the conventional choice for a portfolio project like this.)*
