@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { getAccessToken, setAccessToken } from './tokenStore';
 
+let csrfToken = '';
+
 const ALLOWED_API_ORIGINS = [
   '/api',
   'https://jeevansetuhealthcaresystem.vercel.app',
