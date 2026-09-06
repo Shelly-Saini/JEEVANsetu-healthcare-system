@@ -3,7 +3,7 @@ import { getAccessToken, setAccessToken } from './tokenStore';
 
 const ALLOWED_API_ORIGINS = [
   '/api',
-  'https://jeevansetuthealthcaresystem.vercel.app',
+  'https://jeevansetuhealthcaresystem.vercel.app',
   'https://jeevansetu-healthcare-system-1.onrender.com',
 ];
 
