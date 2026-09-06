@@ -31,7 +31,6 @@ healthcare-operations domain.
 - [Getting started](#getting-started)
 - [Demo accounts](#demo-accounts)
 - [Testing](#testing)
-- [Deployment notes](#deployment-notes)
 - [Known limitations](#known-limitations-documented-honestly-not-hidden)
 - [Project history](#project-history)
 - [Tech stack](#tech-stack)
