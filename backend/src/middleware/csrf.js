@@ -13,7 +13,7 @@ const csrfMiddleware = (req, res, next) => {
       const token = crypto.randomBytes(32).toString('hex');
       res.cookie(CSRF_COOKIE, token, {
         httpOnly: false,   // must be readable by JS to send as header
-        sameSite: 'Strict',
+        sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Strict',
         secure: process.env.NODE_ENV === 'production',
       });
     }
