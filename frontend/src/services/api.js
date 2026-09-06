@@ -24,20 +24,26 @@ if (!isAllowed) {
 const api = axios.create({
   baseURL: resolvedBase,
   timeout: 10000,
-  withCredentials: true, // sends the httpOnly refresh-token & csrf-token cookies
+  withCredentials: true,
 });
 
+// Get CSRF token from memory first.
+// The cookie fallback keeps local development working.
 const getCsrfToken = () => {
+  if (csrfToken) {
+    return csrfToken;
+  }
+
   return (
-    csrfToken ||
     document.cookie
       .split('; ')
       .find((c) => c.startsWith('csrf-token='))
-      ?.split('=')[1] ??
-    ''
+      ?.split('=')[1] || ''
   );
 };
 
+// Initialize CSRF token through a safe GET request.
+// The backend returns the token in the x-csrf-token response header.
 const initCsrf = async () => {
   const { headers } = await api.get('/health');
   csrfToken = headers['x-csrf-token'] || '';
@@ -48,7 +54,7 @@ api.interceptors.request.use(async (config) => {
   const mutating = ['post', 'put', 'delete', 'patch'];
 
   if (mutating.includes(config.method)) {
-    // Make sure we have a CSRF token before every mutating request.
+    // Make sure a CSRF token exists before sending mutations.
     if (!csrfToken) {
       await initCsrf();
     }
@@ -67,7 +73,7 @@ api.interceptors.request.use(async (config) => {
 
 // ── Silent-refresh on 401 ────────────────────────────────────────────────────
 // If an access token expires mid-session, transparently exchange the httpOnly
-// refresh cookie for a new one and retry the original request exactly once.
+// refresh cookie for a new access token and retry the original request once.
 let refreshPromise = null;
 
 api.interceptors.response.use(
@@ -96,7 +102,8 @@ api.interceptors.response.use(
 
         setAccessToken(data.data.accessToken);
 
-        original.headers.Authorization = `Bearer ${data.data.accessToken}`;
+        original.headers.Authorization =
+          `Bearer ${data.data.accessToken}`;
 
         return api(original);
       } catch {
@@ -132,49 +139,67 @@ export const authService = {
 };
 
 export const opdService = {
-  getAll: (hospitalId) => api.get('/opd', { params: { hospitalId } }),
+  getAll: (hospitalId) =>
+    api.get('/opd', { params: { hospitalId } }),
 
-  getById: (id) => api.get(`/opd/${safeId(id)}`),
+  getById: (id) =>
+    api.get(`/opd/${safeId(id)}`),
 
-  create: (data) => api.post('/opd', data),
+  create: (data) =>
+    api.post('/opd', data),
 
-  update: (id, data) => api.put(`/opd/${safeId(id)}`, data),
+  update: (id, data) =>
+    api.put(`/opd/${safeId(id)}`, data),
 
-  remove: (id) => api.delete(`/opd/${safeId(id)}`),
+  remove: (id) =>
+    api.delete(`/opd/${safeId(id)}`),
 };
 
 export const bedService = {
-  getAll: (hospitalId) => api.get('/beds', { params: { hospitalId } }),
+  getAll: (hospitalId) =>
+    api.get('/beds', { params: { hospitalId } }),
 
-  create: (data) => api.post('/beds', data),
+  create: (data) =>
+    api.post('/beds', data),
 
-  update: (id, data) => api.put(`/beds/${safeId(id)}`, data),
+  update: (id, data) =>
+    api.put(`/beds/${safeId(id)}`, data),
 
-  remove: (id) => api.delete(`/beds/${safeId(id)}`),
+  remove: (id) =>
+    api.delete(`/beds/${safeId(id)}`),
 };
 
 export const doctorService = {
-  getAll: (params) => api.get('/doctors', { params }),
+  getAll: (params) =>
+    api.get('/doctors', { params }),
 
-  create: (data) => api.post('/doctors', data),
+  create: (data) =>
+    api.post('/doctors', data),
 
-  update: (id, data) => api.put(`/doctors/${safeId(id)}`, data),
+  update: (id, data) =>
+    api.put(`/doctors/${safeId(id)}`, data),
 
-  remove: (id) => api.delete(`/doctors/${safeId(id)}`),
+  remove: (id) =>
+    api.delete(`/doctors/${safeId(id)}`),
 };
 
 export const inventoryService = {
-  getAll: (hospitalId) => api.get('/inventory', { params: { hospitalId } }),
+  getAll: (hospitalId) =>
+    api.get('/inventory', { params: { hospitalId } }),
 
-  create: (data) => api.post('/inventory', data),
+  create: (data) =>
+    api.post('/inventory', data),
 
-  update: (id, data) => api.put(`/inventory/${safeId(id)}`, data),
+  update: (id, data) =>
+    api.put(`/inventory/${safeId(id)}`, data),
 
-  remove: (id) => api.delete(`/inventory/${safeId(id)}`),
+  remove: (id) =>
+    api.delete(`/inventory/${safeId(id)}`),
 };
 
 export const dashboardService = {
-  get: (hospitalId) => api.get(`/dashboard/${safeId(hospitalId)}`),
+  get: (hospitalId) =>
+    api.get(`/dashboard/${safeId(hospitalId)}`),
 
   history: (hospitalId, hours) =>
     api.get(`/dashboard/${safeId(hospitalId)}/history`, {
@@ -191,20 +216,27 @@ export const cityService = {
   // cityId like "city1" was compared against the Hospital.city name field and
   // never matched.
   get: ({ city, cityId } = {}) =>
-    api.get('/city', { params: { city, cityId } }),
+    api.get('/city', {
+      params: { city, cityId },
+    }),
 };
 
 export const hospitalService = {
-  getAll: () => api.get('/hospitals'),
+  getAll: () =>
+    api.get('/hospitals'),
 };
 
 export const admissionService = {
-  evaluate: (params) => api.get('/admissions/evaluate', { params }),
+  evaluate: (params) =>
+    api.get('/admissions/evaluate', { params }),
 
-  decide: (data) => api.post('/admissions', data),
+  decide: (data) =>
+    api.post('/admissions', data),
 
   history: (hospitalId) =>
-    api.get('/admissions', { params: { hospitalId } }),
+    api.get('/admissions', {
+      params: { hospitalId },
+    }),
 };
 
 export const forecastService = {
@@ -215,7 +247,8 @@ export const forecastService = {
 };
 
 export const auditService = {
-  getAll: (params) => api.get('/audit', { params }),
+  getAll: (params) =>
+    api.get('/audit', { params }),
 };
 
 export default api;
