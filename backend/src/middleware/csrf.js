@@ -8,17 +8,20 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 //  - Safe methods (GET/HEAD/OPTIONS): generate + set csrf-token cookie if absent
 //  - Mutating methods (POST/PUT/DELETE/PATCH): require x-csrf-token header to match cookie
 const csrfMiddleware = (req, res, next) => {
-  if (SAFE_METHODS.has(req.method)) {
-    if (!req.cookies?.[CSRF_COOKIE]) {
-      const token = crypto.randomBytes(32).toString('hex');
-      res.cookie(CSRF_COOKIE, token, {
-        httpOnly: false,   // must be readable by JS to send as header
-        sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Strict',
-        secure: process.env.NODE_ENV === 'production',
-      });
-    }
-    return next();
+ if (SAFE_METHODS.has(req.method)) {
+  const token = req.cookies?.[CSRF_COOKIE] || crypto.randomBytes(32).toString('hex');
+
+  if (!req.cookies?.[CSRF_COOKIE]) {
+    res.cookie(CSRF_COOKIE, token, {
+      httpOnly: false,
+      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Strict',
+      secure: process.env.NODE_ENV === 'production',
+    });
   }
+
+  res.setHeader(CSRF_HEADER, token);
+  return next();
+}
 
   const cookieToken  = req.cookies?.[CSRF_COOKIE];
   const headerToken  = req.headers[CSRF_HEADER];
