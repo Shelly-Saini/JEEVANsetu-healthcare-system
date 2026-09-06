@@ -11,9 +11,14 @@ const ALLOWED_API_ORIGINS = [
 
 const resolvedBase = import.meta.env.VITE_API_URL || '/api';
 
-const isAllowed = ALLOWED_API_ORIGINS.some((origin) => resolvedBase.startsWith(origin));
+const isAllowed = ALLOWED_API_ORIGINS.some((origin) =>
+  resolvedBase.startsWith(origin)
+);
+
 if (!isAllowed) {
-  throw new Error(`Blocked API base URL: "${resolvedBase}". Add it to ALLOWED_API_ORIGINS in api.js.`);
+  throw new Error(
+    `Blocked API base URL: "${resolvedBase}". Add it to ALLOWED_API_ORIGINS in api.js.`
+  );
 }
 
 const api = axios.create({
@@ -23,11 +28,13 @@ const api = axios.create({
 });
 
 const getCsrfToken = () => {
-  return csrfToken || (
+  return (
+    csrfToken ||
     document.cookie
       .split('; ')
       .find((c) => c.startsWith('csrf-token='))
-      ?.split('=')[1] ?? ''
+      ?.split('=')[1] ??
+    ''
   );
 };
 
@@ -37,13 +44,24 @@ const initCsrf = async () => {
   return csrfToken;
 };
 
-api.interceptors.request.use((config) => {
+api.interceptors.request.use(async (config) => {
   const mutating = ['post', 'put', 'delete', 'patch'];
+
   if (mutating.includes(config.method)) {
+    // Make sure we have a CSRF token before every mutating request.
+    if (!csrfToken) {
+      await initCsrf();
+    }
+
     config.headers['x-csrf-token'] = getCsrfToken();
   }
+
   const token = getAccessToken();
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+
   return config;
 });
 
@@ -57,73 +75,111 @@ api.interceptors.response.use(
   async (error) => {
     const original = error.config;
     const isAuthRoute = original?.url?.startsWith('/auth/');
-    if (error.response?.status === 401 && !original._retried && !isAuthRoute) {
+
+    if (
+      error.response?.status === 401 &&
+      !original._retried &&
+      !isAuthRoute
+    ) {
       original._retried = true;
+
       try {
         if (!refreshPromise) {
-          refreshPromise = axios
-            .post(`${resolvedBase}/auth/refresh`, {}, { withCredentials: true })
-            .finally(() => { refreshPromise = null; });
+          refreshPromise = api
+            .post('/auth/refresh')
+            .finally(() => {
+              refreshPromise = null;
+            });
         }
+
         const { data } = await refreshPromise;
+
         setAccessToken(data.data.accessToken);
+
         original.headers.Authorization = `Bearer ${data.data.accessToken}`;
+
         return api(original);
       } catch {
         setAccessToken(null);
         window.dispatchEvent(new CustomEvent('auth:expired'));
       }
     }
+
     return Promise.reject(error);
   }
 );
 
 const safeId = (id) => {
   const s = String(id).replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!s) throw new Error(`Invalid resource id: "${id}"`);
+
+  if (!s) {
+    throw new Error(`Invalid resource id: "${id}"`);
+  }
+
   return s;
 };
 
 export const authService = {
   register: (data) => api.post('/auth/register', data),
-  login:    (data) => api.post('/auth/login', data),
-  logout:   ()     => api.post('/auth/logout'),
-  refresh:  ()     => axios.post(`${resolvedBase}/auth/refresh`, {}, { withCredentials: true }),
-  me:       ()     => api.get('/auth/me'),
+
+  login: (data) => api.post('/auth/login', data),
+
+  logout: () => api.post('/auth/logout'),
+
+  refresh: () => api.post('/auth/refresh'),
+
+  me: () => api.get('/auth/me'),
 };
 
 export const opdService = {
-  getAll:  (hospitalId) => api.get('/opd', { params: { hospitalId } }),
-  getById: (id)         => api.get(`/opd/${safeId(id)}`),
-  create:  (data)       => api.post('/opd', data),
-  update:  (id, data)   => api.put(`/opd/${safeId(id)}`, data),
-  remove:  (id)         => api.delete(`/opd/${safeId(id)}`),
+  getAll: (hospitalId) => api.get('/opd', { params: { hospitalId } }),
+
+  getById: (id) => api.get(`/opd/${safeId(id)}`),
+
+  create: (data) => api.post('/opd', data),
+
+  update: (id, data) => api.put(`/opd/${safeId(id)}`, data),
+
+  remove: (id) => api.delete(`/opd/${safeId(id)}`),
 };
 
 export const bedService = {
-  getAll:  (hospitalId) => api.get('/beds', { params: { hospitalId } }),
-  create:  (data)       => api.post('/beds', data),
-  update:  (id, data)   => api.put(`/beds/${safeId(id)}`, data),
-  remove:  (id)         => api.delete(`/beds/${safeId(id)}`),
+  getAll: (hospitalId) => api.get('/beds', { params: { hospitalId } }),
+
+  create: (data) => api.post('/beds', data),
+
+  update: (id, data) => api.put(`/beds/${safeId(id)}`, data),
+
+  remove: (id) => api.delete(`/beds/${safeId(id)}`),
 };
 
 export const doctorService = {
-  getAll:  (params)     => api.get('/doctors', { params }),
-  create:  (data)       => api.post('/doctors', data),
-  update:  (id, data)   => api.put(`/doctors/${safeId(id)}`, data),
-  remove:  (id)         => api.delete(`/doctors/${safeId(id)}`),
+  getAll: (params) => api.get('/doctors', { params }),
+
+  create: (data) => api.post('/doctors', data),
+
+  update: (id, data) => api.put(`/doctors/${safeId(id)}`, data),
+
+  remove: (id) => api.delete(`/doctors/${safeId(id)}`),
 };
 
 export const inventoryService = {
-  getAll:  (hospitalId) => api.get('/inventory', { params: { hospitalId } }),
-  create:  (data)       => api.post('/inventory', data),
-  update:  (id, data)   => api.put(`/inventory/${safeId(id)}`, data),
-  remove:  (id)         => api.delete(`/inventory/${safeId(id)}`),
+  getAll: (hospitalId) => api.get('/inventory', { params: { hospitalId } }),
+
+  create: (data) => api.post('/inventory', data),
+
+  update: (id, data) => api.put(`/inventory/${safeId(id)}`, data),
+
+  remove: (id) => api.delete(`/inventory/${safeId(id)}`),
 };
 
 export const dashboardService = {
-  get:     (hospitalId)         => api.get(`/dashboard/${safeId(hospitalId)}`),
-  history: (hospitalId, hours)  => api.get(`/dashboard/${safeId(hospitalId)}/history`, { params: { hours } }),
+  get: (hospitalId) => api.get(`/dashboard/${safeId(hospitalId)}`),
+
+  history: (hospitalId, hours) =>
+    api.get(`/dashboard/${safeId(hospitalId)}/history`, {
+      params: { hours },
+    }),
 };
 
 export const cityService = {
@@ -134,7 +190,8 @@ export const cityService = {
   // the old single-argument version always sent the value as ?city=, so a
   // cityId like "city1" was compared against the Hospital.city name field and
   // never matched.
-  get: ({ city, cityId } = {}) => api.get('/city', { params: { city, cityId } }),
+  get: ({ city, cityId } = {}) =>
+    api.get('/city', { params: { city, cityId } }),
 };
 
 export const hospitalService = {
@@ -142,13 +199,19 @@ export const hospitalService = {
 };
 
 export const admissionService = {
-  evaluate: (params)      => api.get('/admissions/evaluate', { params }),
-  decide:   (data)        => api.post('/admissions', data),
-  history:  (hospitalId)  => api.get('/admissions', { params: { hospitalId } }),
+  evaluate: (params) => api.get('/admissions/evaluate', { params }),
+
+  decide: (data) => api.post('/admissions', data),
+
+  history: (hospitalId) =>
+    api.get('/admissions', { params: { hospitalId } }),
 };
 
 export const forecastService = {
-  get: (hospitalId, hours) => api.get(`/forecast/${safeId(hospitalId)}`, { params: { hours } }),
+  get: (hospitalId, hours) =>
+    api.get(`/forecast/${safeId(hospitalId)}`, {
+      params: { hours },
+    }),
 };
 
 export const auditService = {
