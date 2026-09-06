@@ -22,8 +22,20 @@ const api = axios.create({
   withCredentials: true, // sends the httpOnly refresh-token & csrf-token cookies
 });
 
-const getCsrfToken = () =>
-  document.cookie.split('; ').find((c) => c.startsWith('csrf-token='))?.split('=')[1] ?? '';
+const getCsrfToken = () => {
+  return csrfToken || (
+    document.cookie
+      .split('; ')
+      .find((c) => c.startsWith('csrf-token='))
+      ?.split('=')[1] ?? ''
+  );
+};
+
+const initCsrf = async () => {
+  const { headers } = await api.get('/health');
+  csrfToken = headers['x-csrf-token'] || '';
+  return csrfToken;
+};
 
 api.interceptors.request.use((config) => {
   const mutating = ['post', 'put', 'delete', 'patch'];
