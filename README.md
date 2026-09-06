@@ -19,10 +19,6 @@ goal is to demonstrate full-stack engineering (React, Node/Express, MongoDB,
 real-time systems, RBAC, explainable decision logic) around a coherent
 healthcare-operations domain.
 
-> 📸 *Add screenshots or a short demo GIF here* — a dashboard view, the City
-> Ops map, and the Smart Admissions panel are the three most visually
-> compelling screens to lead with.
-
 ---
 
 ## Table of contents
@@ -196,22 +192,6 @@ All four checks above run in CI on every push/PR (`.github/workflows/ci.yml`).
 
 ---
 
-## Deployment notes
-
-- `vercel.json` targets Vercel's multi-service config (frontend + backend as
-  separate serverless deployments under one project). **Socket.IO needs a
-  persistent process** to hold WebSocket connections open — Vercel's
-  serverless functions are not a good fit for this. For the realtime and
-  scheduled-snapshot features to work in production, deploy the backend to a
-  persistent Node host (Render, Railway, Fly.io, a plain VM) instead, and set
-  `ENABLE_HTTP_SERVER=true` / `ENABLE_SNAPSHOT_SCHEDULER=true`. The frontend
-  degrades gracefully (falls back to fetched-on-load data, no live badge) if
-  it can't establish a socket connection.
-- Set real, random values for `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` in
-  any non-local environment.
-
----
-
 ## Known limitations (documented honestly, not hidden)
 
 - **No DB integration tests.** Test coverage is limited to pure-logic unit
@@ -271,4 +251,4 @@ It went through two major passes to reach its current state:
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE). *(Add a LICENSE file to the repo root if one isn't there yet; MIT is the conventional choice for a portfolio project like this.)*
+MIT — see [`LICENSE`](./LICENSE). 
